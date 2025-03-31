@@ -2,6 +2,17 @@
 
 Working on some scripts to build a personal agent for social or professional event tracking and management. This is very much a work in progress, so please check back for updates and feel free to leave comments, feedback, or requests! ✨
 
+## 🛠️ Agent Functionality
+
+### 🎉 Event Tracking & Management
+The **Event Agent** is designed to help you track and manage your social and professional events. I created an email account, signed up for mailing lists of meetups and event notifications, and then built this agent to parse the emails into structured data in a Google sheet so I can easily see and filter events from across a bunch of sources, including personal invites that I forward to my event email address.
+
+**🌟 Key Features:**
+- **Email Integration:** Automatically pull event data from unstructured emails so nothing gets lost! ⏰
+- **Web Scraping:** Visit event websites to fill out additional details that might not be in the email summary.
+- **Event Organization:** Easily search and filter events in the structured spreadsheet output. 📅
+- **Integration with APIs:** Future updates will include support for various APIs to enhance functionality. 🔗
+
 ## 🚀 Quick Start
 
 1. Clone this repository:
@@ -32,16 +43,6 @@ pip install -r requirements.txt
      python3 oauth_setup.py
      ```
    - Follow the authentication flow in your browser
-
-## 🛠️ Agent Functionality
-
-### 🎉 Event Tracking & Management
-The **Event Agent** is designed to help you track and manage your social and professional events. 
-
-**🌟 Key Features:**
-- **Email Integration:** Get notified about upcoming events so you never miss out! ⏰
-- **Event Categorization:** Organize events by type (e.g., work, social) for easy access. 📅
-- **Integration with APIs:** Future updates will include support for various APIs to enhance functionality. 🔗
 
 ## 🔧 Troubleshooting
 
