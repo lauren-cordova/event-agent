@@ -23,7 +23,7 @@ flowchart LR
         G([📥 Gmail Inbox])
     end
 
-    subgraph Processing [⚙️ Processing]
+    subgraph Processing [🤖 Event Agent 🤖]
         E([Email<br>Parser])
         X([Event<br>Extractor])
         W([Web<br>Scraper])
@@ -35,6 +35,7 @@ flowchart LR
     end
 
     G -->|New Emails| E
+    E -->|Mark Read & Archive| G
     E -->|Extracted Text| X
     X -->|Event Data| D
     X -->|URLs| W
