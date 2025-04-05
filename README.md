@@ -19,35 +19,36 @@ The Event Agent is built as a pipeline that processes emails, extracts event inf
 
 ```mermaid
 flowchart LR
-    subgraph Input
-        G[Gmail Inbox]
+    subgraph Input [📥 Input]
+        G([📥 Gmail Inbox])
     end
 
-    subgraph Processing
-        E[Email Parser]
-        X[Event Extractor]
-        W[Web Scraper]
-        D[Data Enricher]
+    subgraph Processing [⚙️ Processing]
+        E([Email<br>Parser])
+        X([Event<br>Extractor])
+        W([Web<br>Scraper])
+        D([Data<br>Enricher])
     end
 
-    subgraph Output
-        S[Google Sheets]
+    subgraph Output [📤 Output]
+        S([📤 Google Sheets])
     end
 
     G -->|New Emails| E
     E -->|Extracted Text| X
     X -->|Event Data| D
-    X -->|Event URLs| W
-    W -->|Additional Details| D
+    X -->|URLs| W
+    W -->|Extra Info| D
     D -->|Structured Data| S
 
-    style G fill:#f9f,stroke:#333,stroke-width:2px,color:red
-    style E fill:#bbf,stroke:#333,stroke-width:2px,color:red
-    style X fill:#bbf,stroke:#333,stroke-width:2px,color:red
-    style W fill:#bbf,stroke:#333,stroke-width:2px,color:red
-    style D fill:#bbf,stroke:#333,stroke-width:2px,color:red
-    style S fill:#f9f,stroke:#333,stroke-width:2px,color:red
-    linkStyle default stroke:#333,stroke-width:2px,color:red
+    style G fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
+    style E fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
+    style X fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
+    style W fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
+    style D fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
+    style S fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
+
+    linkStyle default stroke:#fff,stroke-width:2px
 ```
 
 ### Components
