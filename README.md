@@ -13,6 +13,74 @@ The **Event Agent** is designed to help you track and manage your social and pro
 - **Event Organization:** Easily search and filter events in the structured spreadsheet output. 📅
 - **Integration with APIs:** Future updates will include support for various APIs to enhance functionality. 🔗
 
+## 🏗️ Architecture
+
+The Event Agent is built as a pipeline that processes emails, extracts event information, and stores it in a structured format. Here's how the components work together:
+
+```mermaid
+flowchart LR
+    subgraph Input
+        G[Gmail Inbox]
+    end
+
+    subgraph Processing
+        E[Email Parser]
+        X[Event Extractor]
+        W[Web Scraper]
+        D[Data Enricher]
+    end
+
+    subgraph Output
+        S[Google Sheets]
+    end
+
+    G -->|New Emails| E
+    E -->|Extracted Text| X
+    X -->|Event Data| D
+    X -->|Event URLs| W
+    W -->|Additional Details| D
+    D -->|Structured Data| S
+
+    style G fill:#f9f,stroke:#333,stroke-width:2px
+    style E fill:#bbf,stroke:#333,stroke-width:2px
+    style X fill:#bbf,stroke:#333,stroke-width:2px
+    style W fill:#bbf,stroke:#333,stroke-width:2px
+    style D fill:#bbf,stroke:#333,stroke-width:2px
+    style S fill:#f9f,stroke:#333,stroke-width:2px
+```
+
+### Components
+
+1. **Gmail Inbox**
+   - Monitors a dedicated email account for event notifications
+   - Uses Gmail API to fetch and process new emails
+   - Marks processed emails as read and archives them
+
+2. **Email Parser**
+   - Extracts relevant information from email bodies
+   - Identifies event details like dates, times, and locations
+   - Handles various email formats and structures
+
+3. **Event Extractor**
+   - Uses OpenAI's GPT to intelligently parse event information
+   - Identifies and structures event details from unstructured text
+   - Handles variations in event description formats
+
+4. **Web Scraper**
+   - Visits event URLs to gather additional details
+   - Extracts information from event websites
+   - Fills in missing event details
+
+5. **Data Enricher**
+   - Combines information from multiple sources
+   - Validates and standardizes event data
+   - Ensures consistent formatting
+
+6. **Google Sheets**
+   - Stores structured event data
+   - Provides easy filtering and searching
+   - Serves as the central event database
+
 ## 🚀 Quick Start
 
 1. Clone this repository:
