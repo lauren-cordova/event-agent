@@ -41,12 +41,13 @@ flowchart LR
     W -->|Additional Details| D
     D -->|Structured Data| S
 
-    style G fill:#f9f,stroke:#333,stroke-width:2px
-    style E fill:#bbf,stroke:#333,stroke-width:2px
-    style X fill:#bbf,stroke:#333,stroke-width:2px
-    style W fill:#bbf,stroke:#333,stroke-width:2px
-    style D fill:#bbf,stroke:#333,stroke-width:2px
-    style S fill:#f9f,stroke:#333,stroke-width:2px
+    style G fill:#f9f,stroke:#333,stroke-width:2px,color:red
+    style E fill:#bbf,stroke:#333,stroke-width:2px,color:red
+    style X fill:#bbf,stroke:#333,stroke-width:2px,color:red
+    style W fill:#bbf,stroke:#333,stroke-width:2px,color:red
+    style D fill:#bbf,stroke:#333,stroke-width:2px,color:red
+    style S fill:#f9f,stroke:#333,stroke-width:2px,color:red
+    linkStyle default stroke:#333,stroke-width:2px,color:red
 ```
 
 ### Components
