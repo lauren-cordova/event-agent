@@ -13,21 +13,41 @@ An intelligent agent that processes event-related emails, extracts event details
 ## Architecture
 
 ```mermaid
-graph TD
-    A[Gmail Inbox] -->|Fetch Emails| B[Email Parser]
-    B -->|Extract Content| C[Event Extractor]
-    C -->|AI Processing| D[Data Enricher]
-    D -->|Store Data| E[DynamoDB]
-    E -->|Query Data| F[Streamlit UI]
-    F -->|Display| G[User Interface]
-    
-    style A fill:#EA4335,color:#fff
-    style B fill:#4285F4,color:#fff
-    style C fill:#FBBC05,color:#000
-    style D fill:#34A853,color:#fff
-    style E fill:#FF9900,color:#fff
-    style F fill:#00A67E,color:#fff
-    style G fill:#1DA1F2,color:#fff
+graph LR
+    subgraph Input [📥 Input]
+        G([📥 Gmail Inbox])
+    end
+
+    subgraph Processing [⚙️ Processing]
+        E([Email<br>Parser])
+        X([Event<br>Extractor])
+        W([Web<br>Scraper])
+        D([Data<br>Enricher])
+        DB([🗄️ DynamoDB])
+    end
+
+    subgraph Output [📤 Output]
+        UI([💬 Streamlit UI])
+    end
+
+    G -->|New Emails| E
+    E -->|Extracted Text| DB
+    DB -->|Stored Email Data| X
+    X -->|Event Data| D
+    X -->|URLs| W
+    W -->|Extra Info| D
+    D -->|Stores Events| DB
+    DB -->|Structured Data| UI
+
+    style G fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
+    style E fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
+    style X fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
+    style W fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
+    style D fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
+    style UI fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
+    style DB fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
+
+    linkStyle default stroke:#fff,stroke-width:2px
 ```
 
 ## Prerequisites
