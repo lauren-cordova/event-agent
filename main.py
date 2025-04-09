@@ -1,19 +1,31 @@
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google.auth.exceptions import RefreshError
-import base64
+import streamlit as st
+import sys
+import os
+import boto3
+import pandas as pd
+import subprocess
+import requests
+import time
 import json
 import re
-import os
-import openai
-import sys
-from datetime import datetime
+import base64
 import email.utils
-import requests
+from datetime import datetime
 from bs4 import BeautifulSoup
-import time
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from openai import OpenAI
+from qdrant_client import QdrantClient
+from qdrant_client.http import models
+
+# Gmail API SCOPES
+SCOPES = [
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/gmail.modify'
+]
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'secrets')) #REPLACE WITH YOUR PATH
 import my_secrets #REPLACE WITH YOUR SECRETS FILE NAME
@@ -294,18 +306,13 @@ def update_existing_event(service, spreadsheet_id, event_data, existing_row):
 
 # Extract events using OpenAI
 def extract_events_with_ai(plain_text):
-    API_KEY = my_secrets.openai_by
-    ENDPOINT = "https://api.openai.com/v1/chat/completions"
-    
-    # Limit text length to approximately 2000 characters to stay within token limits
-    # This gives enough context while leaving room for the model's response
-    if len(plain_text) > 2000:
-        plain_text = plain_text[:2000]
-    
-    payload = {
-        "model": "gpt-4",
-        "messages": [
-            {"role": "system", "content": """You are an event extraction assistant. Extract event details from the given text and return them in a JSON array format.
+    """Extract events from email text using OpenAI."""
+    try:
+        # Process the entire email text without truncation
+        payload = {
+            "model": "gpt-4",
+            "messages": [
+                {"role": "system", "content": """You are an event extraction assistant. Extract event details from the given text and return them in a JSON array format.
 Each event should be an object with these exact fields:
 {
     "Event Name": "string",
@@ -319,110 +326,112 @@ Each event should be an object with these exact fields:
     "Description": "string",
     "URL": "string"
 }
-Only report clean start and end times, not timezones. Report State as a 2 letter abbreviation. Report date as MM/DD/YYYY. The word Location is not a Venue or Address. Return ONLY the JSON array, no other text. If no events are found, return an empty array []."""},
-            {"role": "user", "content": plain_text}
-        ],
-        "temperature": 0.3,
-        "max_tokens": 1500  # Increased to handle more events
-    }
-    
-    headers = {
-        "Authorization": f"Bearer {API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    try:
-        print("\nSending text to OpenAI:", plain_text[:200] + "..." if len(plain_text) > 200 else plain_text)
-        print("\nUsing API key:", API_KEY[:8] + "..." if API_KEY else "No API key found")
+Only report clean start and end times, not timezones. Report State as a 2 letter abbreviation. Report date as MM/DD/YYYY. The word Location is not a Venue or Address. Return ONLY the JSON array, no other text. If no events are found, return an empty array [].
+
+IMPORTANT: Look for any mention of events, gatherings, meetings, or activities in the text. Even if the information is incomplete, extract what you can find. If you see a date and time mentioned, it's likely an event. If you see a location mentioned, it's likely a venue. Extract as much information as possible, even if some fields are empty."""},
+                {"role": "user", "content": plain_text}
+            ],
+            "temperature": 0.3,
+            "max_tokens": 4000  # Increased token limit to handle longer emails
+        }
         
-        response = requests.post(ENDPOINT, headers=headers, json=payload)
-        if response.status_code != 200:
-            print(f"OpenAI API error: {response.status_code}")
-            print(f"Response content: {response.text}")
-            return []
-            
-        data = response.json()
+        headers = {
+            "Authorization": f"Bearer {my_secrets.openai_by}",
+            "Content-Type": "application/json"
+        }
         
-        if 'choices' not in data or not data['choices']:
-            print("No choices in OpenAI response")
-            return []
-            
-        content = data['choices'][0]['message']['content'].strip()
-        if not content:
-            print("Empty content in OpenAI response")
-            return []
-            
-        print("\nOpenAI raw response:", content)
-            
         try:
-            # First try direct JSON parsing
-            try:
-                events = json.loads(content)
-                if isinstance(events, list):
-                    return clean_events(events)
-            except json.JSONDecodeError:
-                pass
-                
-            # If direct parsing fails, try to extract and clean the JSON array
-            start_idx = content.find('[')
-            end_idx = content.rfind(']')
-            
-            if start_idx != -1 and end_idx != -1:
-                json_str = content[start_idx:end_idx + 1]
-                
-                # Fix truncated JSON by completing any incomplete objects
-                parts = json_str.split('},')
-                fixed_parts = []
-                for i, part in enumerate(parts):
-                    if i < len(parts) - 1:  # Not the last part
-                        if not part.strip().endswith('}'):
-                            part = part + '}'
-                    fixed_parts.append(part)
-                json_str = '}'.join(fixed_parts)
-                
-                # Remove duplicate fields by keeping the last occurrence
-                # This regex matches field patterns like '"URL": "value",' and keeps only the last one
-                for field in ["URL", "Event Name"]:  # Add other fields if needed
-                    pattern = f'"{field}":[^,}}]+,\\s*"{field}":'
-                    while re.search(pattern, json_str):
-                        match = re.search(pattern, json_str)
-                        if match:
-                            start, end = match.span()
-                            # Keep only the second field
-                            second_field_start = json_str.find(f'"{field}":', start + len(field) + 4)
-                            json_str = json_str[:start] + json_str[second_field_start:]
-                
-                # Fix any remaining JSON syntax issues
-                json_str = re.sub(r',\s*}', '}', json_str)  # Remove trailing commas in objects
-                json_str = re.sub(r',\s*]', ']', json_str)  # Remove trailing commas in arrays
-                json_str = re.sub(r'\s+', ' ', json_str)    # Normalize whitespace
-                
-                print("\nCleaned JSON string:", json_str)
-                
-                try:
-                    events = json.loads(json_str)
-                    if not isinstance(events, list):
-                        print("Response is not a list")
-                        return []
-                    return clean_events(events)
-                except json.JSONDecodeError as e:
-                    print(f"Error parsing cleaned JSON: {e}")
-                    print(f"Cleaned JSON string: {json_str}")
-                    return []
-            else:
-                print("No JSON array found in response - start_idx:", start_idx, "end_idx:", end_idx)
+            response = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=payload)
+            if response.status_code != 200:
+                print(f"OpenAI API error: {response.status_code}")
+                print(f"Response content: {response.text}")
                 return []
                 
+            data = response.json()
+            
+            if 'choices' not in data or not data['choices']:
+                print("No choices in OpenAI response")
+                return []
+                
+            content = data['choices'][0]['message']['content'].strip()
+            if not content:
+                print("Empty content in OpenAI response")
+                return []
+                
+            try:
+                # First try direct JSON parsing
+                try:
+                    events = json.loads(content)
+                    if isinstance(events, list):
+                        print(f"Successfully parsed {len(events)} events")
+                        return clean_events(events)
+                except json.JSONDecodeError:
+                    print("Direct JSON parsing failed, trying to extract JSON array...")
+                    
+                # If direct parsing fails, try to extract and clean the JSON array
+                start_idx = content.find('[')
+                end_idx = content.rfind(']')
+                
+                if start_idx != -1 and end_idx != -1:
+                    json_str = content[start_idx:end_idx + 1]
+                    print("Extracted JSON string:", json_str)
+                    
+                    # Fix truncated JSON by completing any incomplete objects
+                    parts = json_str.split('},')
+                    fixed_parts = []
+                    for i, part in enumerate(parts):
+                        if i < len(parts) - 1:  # Not the last part
+                            if not part.strip().endswith('}'):
+                                part = part + '}'
+                        fixed_parts.append(part)
+                    json_str = '}'.join(fixed_parts)
+                    
+                    # Remove duplicate fields by keeping the last occurrence
+                    for field in ["URL", "Event Name"]:
+                        pattern = f'"{field}":[^,}}]+,\\s*"{field}":'
+                        while re.search(pattern, json_str):
+                            match = re.search(pattern, json_str)
+                            if match:
+                                start, end = match.span()
+                                second_field_start = json_str.find(f'"{field}":', start + len(field) + 4)
+                                json_str = json_str[:start] + json_str[second_field_start:]
+                    
+                    # Fix any remaining JSON syntax issues
+                    json_str = re.sub(r',\s*}', '}', json_str)
+                    json_str = re.sub(r',\s*]', ']', json_str)
+                    json_str = re.sub(r'\s+', ' ', json_str)
+                    
+                    print("Cleaned JSON string:", json_str)
+                    
+                    try:
+                        events = json.loads(json_str)
+                        if not isinstance(events, list):
+                            print("Response is not a list")
+                            return []
+                        print(f"Successfully parsed {len(events)} events from cleaned JSON")
+                        return clean_events(events)
+                    except json.JSONDecodeError as e:
+                        print(f"Error parsing cleaned JSON: {e}")
+                        print(f"Cleaned JSON string: {json_str}")
+                        return []
+                else:
+                    print("No JSON array found in response")
+                    return []
+                    
+            except Exception as e:
+                print(f"Error processing response: {e}")
+                print(f"Raw response: {content}")
+                return []
+                
+        except requests.exceptions.RequestException as e:
+            print(f"Error making OpenAI API request: {e}")
+            return []
         except Exception as e:
-            print(f"Error processing response: {e}")
-            print(f"Raw response: {content}")
+            print(f"Unexpected error in extract_events_with_ai: {e}")
             return []
             
-    except requests.exceptions.RequestException as e:
-        print(f"Error making OpenAI API request: {e}")
-        return []
     except Exception as e:
-        print(f"Unexpected error in extract_events_with_ai: {e}")
+        print(f"Error in extract_events_with_ai: {e}")
         return []
 
 def clean_events(events):
@@ -457,68 +466,157 @@ def sanitize_event_data(event_data):
         sanitized.append(sanitized_field)
     return sanitized
 
-# Process emails and extract events
-def process_emails():
+# Initialize DynamoDB client
+dynamodb = boto3.resource('dynamodb',
+    aws_access_key_id=my_secrets.event_agent_aws_access_key_id,
+    aws_secret_access_key=my_secrets.event_agent_aws_secret_access_key,
+    region_name=my_secrets.event_agent_aws_region
+)
+
+# Get DynamoDB tables
+event_emails_table = dynamodb.Table('event_emails')
+events_table = dynamodb.Table('events')
+
+def datetime_to_timestamp(dt_str):
+    """Convert datetime string to Unix timestamp."""
     try:
-        creds = load_credentials()
-        service = build('sheets', 'v4', credentials=creds)
+        dt = datetime.strptime(dt_str, '%m/%d/%Y %I:%M %p')
+        return int(dt.timestamp())
+    except:
+        return int(time.time())  # Return current time if parsing fails
+
+def write_to_dynamo(email_data):
+    """Write email data to DynamoDB."""
+    for row in email_data:
+        msg_id, date_str, from_email, subject, body = row
         
-        # Read emails from the Emails sheet
-        emails = service.spreadsheets().values().get(
-            spreadsheetId=my_secrets.SPREADSHEET_ID,
-            range="Emails!A:F"
-        ).execute().get('values', [])
+        item = {
+            'msg_id': msg_id,
+            'received': datetime_to_timestamp(date_str),
+            'sender': from_email,
+            'subject': subject,
+            'body': body,
+            'processed': None  # Will be updated when processed
+        }
         
-        if not emails:
-            print("No emails found in the Emails sheet.")
+        try:
+            event_emails_table.put_item(Item=item)
+        except Exception as e:
+            print(f"Error writing to DynamoDB: {e}")
+
+def mark_as_processed(msg_id):
+    """Mark an email as processed in DynamoDB."""
+    try:
+        current_time = int(time.time())
+        event_emails_table.update_item(
+            Key={'msg_id': msg_id},
+            UpdateExpression='SET #p = :val',
+            ExpressionAttributeNames={
+                '#p': 'processed'
+            },
+            ExpressionAttributeValues={
+                ':val': current_time
+            }
+        )
+    except Exception as e:
+        st.error(f"Error marking email as processed: {e}")
+
+def write_event_to_dynamo(event_data):
+    """Write event data to DynamoDB."""
+    try:
+        # Generate a unique event ID
+        event_id = f"{event_data[0]}_{int(time.time())}"
+        
+        # Convert date string to timestamp if it's in the correct format
+        try:
+            event_date = datetime_to_timestamp(event_data[1])
+        except:
+            event_date = int(time.time())  # Use current time if date parsing fails
+        
+        item = {
+            'event_id': event_id,
+            'event_name': event_data[0],
+            'date': event_date,
+            'start_time': event_data[2],
+            'end_time': event_data[3],
+            'city': event_data[4],
+            'state': event_data[5],
+            'venue': event_data[6],
+            'address': event_data[7],
+            'description': event_data[8],
+            'url': event_data[9]
+        }
+        
+        print(f"Writing event to DynamoDB: {item}")  # Debug log
+        
+        events_table.put_item(Item=item)
+        print(f"Successfully wrote event to DynamoDB")  # Debug log
+        
+    except Exception as e:
+        print(f"Error writing event to DynamoDB: {e}")  # Debug log
+        raise
+
+def clean_email_text(text):
+    """Clean email text by removing HTML and formatting characters."""
+    if not text:
+        return ""
+    
+    # Remove HTML tags
+    text = re.sub(r'<[^>]+>', ' ', text)
+    
+    # Remove URLs
+    text = re.sub(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', ' ', text)
+    
+    # Remove email addresses
+    text = re.sub(r'[\w\.-]+@[\w\.-]+\.\w+', ' ', text)
+    
+    # Remove special characters and extra whitespace
+    text = re.sub(r'[^\w\s.,!?-]', ' ', text)
+    text = re.sub(r'\s+', ' ', text)
+    
+    # Truncate to approximately 6000 tokens (assuming 4 chars per token)
+    max_length = 24000  # 6000 tokens * 4 chars per token
+    if len(text) > max_length:
+        text = text[:max_length] + "... (truncated)"
+    
+    return text.strip()
+
+def process_emails():
+    """Process unprocessed emails and extract events."""
+    try:
+        # Read unprocessed emails from DynamoDB
+        response = event_emails_table.scan(
+            FilterExpression='attribute_not_exists(#p)',
+            ExpressionAttributeNames={
+                '#p': 'processed'
+            }
+        )
+        unprocessed_emails = response.get('Items', [])
+        
+        if not unprocessed_emails:
+            print("No unprocessed emails found")
             return
         
-        # Skip header row and create list of rows to process with their dates
-        rows_to_process = []
-        for idx, row in enumerate(emails[1:], start=2):
-            processed = row[5] if len(row) > 5 else ""  # Column F (index 5) for processed status
-            plain_text = row[4] if len(row) > 4 else ""  # Column E (index 4) for body text
-            date_str = row[1] if len(row) > 1 else ""  # Column B (index 1) for date
-            
-            if not processed and plain_text:
-                try:
-                    # Parse the date string to datetime object for sorting
-                    date = datetime.strptime(date_str, '%m/%d/%Y %I:%M %p')
-                    rows_to_process.append((idx, plain_text, date))
-                except ValueError:
-                    print(f"Warning: Could not parse date '{date_str}' for row {idx}")
-                    continue
+        print(f"Found {len(unprocessed_emails)} unprocessed emails")
         
-        if not rows_to_process:
-            print("No unprocessed emails found.")
-            return
-        
-        # Sort rows by date (oldest first)
-        rows_to_process.sort(key=lambda x: x[2])
-        
-        print(f"Processing {len(rows_to_process)} emails in chronological order...")
-        
-        # Get existing events to check for duplicates
-        existing_events = service.spreadsheets().values().get(
-            spreadsheetId=my_secrets.SPREADSHEET_ID,
-            range="Events!A:J"
-        ).execute().get('values', [])
-        
-        # Create URL to row mapping
-        url_to_row = {}
-        if existing_events:
-            for row in existing_events[1:]:  # Skip header
-                if len(row) > 9:  # URL is in column J (index 9)
-                    url = sanitize_url(row[9])
-                    if url:
-                        url_to_row[url] = row
-        
-        for row_num, text, _ in rows_to_process:  # Ignore the date in the loop
+        for email in unprocessed_emails:
             try:
-                events = extract_events_with_ai(text)
+                print(f"Processing email: {email['subject']}")
+                
+                # Clean the email body text
+                cleaned_body = clean_email_text(email['body'])
+                if not cleaned_body:
+                    print(f"Skipping email {email['subject']} - no valid text content")
+                    continue
+                
+                # Extract events from the cleaned email body
+                events = extract_events_with_ai(cleaned_body)
+                print(f"Extracted {len(events)} events from email")
+                
                 if events:
                     for event in events:
                         try:
+                            print(f"Processing event: {event.get('Event Name', 'Unnamed Event')}")
                             # Format the event data
                             event_data = [
                                 event.get("Event Name", ""),
@@ -533,96 +631,368 @@ def process_emails():
                                 sanitize_url(event.get("URL", ""))
                             ]
                             
-                            url = event_data[9]  # Get the URL
-                            if not url:
-                                continue
-                                
-                            # Check if URL already exists
-                            if url in url_to_row:
-                                # Update existing event with any missing data
-                                update_existing_event(service, my_secrets.SPREADSHEET_ID, event_data, url_to_row[url])
-                            else:
-                                # Identify missing fields
-                                missing_fields = []
-                                field_names = ["Event Name", "Date", "Start Time", "End Time", "City", "State", "Venue", "Address", "Description"]
-                                for i, field in enumerate(event_data[:-1]):  # Exclude URL
-                                    if not field:
-                                        missing_fields.append(field_names[i])
-                                
-                                # If there are missing fields, fetch data from URL
-                                if missing_fields:
-                                    print(f"Fetching missing data for URL: {url}")
-                                    print(f"Missing fields: {', '.join(missing_fields)}")
-                                    missing_data = fetch_missing_data(url, missing_fields)
-                                    if missing_data:
-                                        # Update missing fields
-                                        for field_name, value in missing_data.items():
-                                            field_index = field_names.index(field_name)
-                                            if not event_data[field_index]:
-                                                event_data[field_index] = value
-                                
-                                # Append new event
-                                service.spreadsheets().values().append(
-                                    spreadsheetId=my_secrets.SPREADSHEET_ID,
-                                    range="Events!A:J",
-                                    valueInputOption="RAW",
-                                    insertDataOption="INSERT_ROWS",
-                                    body={"values": [event_data]}
-                                ).execute()
-                                
-                                # Update URL mapping
-                                url_to_row[url] = event_data
+                            # Write event to DynamoDB
+                            write_event_to_dynamo(event_data)
+                            
                         except Exception as e:
                             print(f"Error processing event: {e}")
                             continue
                     
-                    # Mark email as processed with timestamp
-                    timestamp = datetime.utcnow().isoformat()
-                    service.spreadsheets().values().update(
-                        spreadsheetId=my_secrets.SPREADSHEET_ID,
-                        range=f"Emails!F{row_num}",
-                        valueInputOption="RAW",
-                        body={"values": [[timestamp]]}
-                    ).execute()
+                    # Only mark as processed if we successfully extracted and stored events
+                    mark_as_processed(email['msg_id'])
+                    print(f"Successfully processed email: {email['subject']}")
+                else:
+                    print(f"No events found in email: {email['subject']}")
+                    # Don't mark as processed if no events were found
+                
             except Exception as e:
-                print(f"Error processing email row {row_num}: {e}")
+                print(f"Error processing email {email['subject']}: {e}")
+                # Don't mark as processed if there was an error
                 continue
-        
-        # Sort events by date and time
-        data_range = "Events!A:J"
-        sheet_data = service.spreadsheets().values().get(
-            spreadsheetId=my_secrets.SPREADSHEET_ID,
-            range=data_range
-        ).execute().get('values', [])
-        
-        if sheet_data:
-            headers = sheet_data[0]
-            rows = sheet_data[1:]
-            rows.sort(key=lambda x: (x[1], x[2], x[0]))  # Sort by Date, Start Time, Event Name
-            
-            service.spreadsheets().values().update(
-                spreadsheetId=my_secrets.SPREADSHEET_ID,
-                range=data_range,
-                valueInputOption="RAW",
-                body={"values": [headers] + rows}
-            ).execute()
-        
+                
     except Exception as e:
         print(f"Error in process_emails: {e}")
-        raise
+        pass
+
+def update_existing_event(new_event_data, existing_event):
+    """Update existing event with missing data."""
+    try:
+        update_expressions = []
+        expression_values = {}
+        
+        # Check each field and add to update if missing in existing event
+        fields = {
+            'event_name': 0,
+            'date': 1,
+            'start_time': 2,
+            'end_time': 3,
+            'city': 4,
+            'state': 5,
+            'venue': 6,
+            'address': 7,
+            'description': 8,
+            'url': 9
+        }
+        
+        for field, index in fields.items():
+            if not existing_event.get(field) and new_event_data[index]:
+                update_expressions.append(f"{field} = :{field}")
+                expression_values[f":{field}"] = new_event_data[index]
+        
+        if update_expressions:
+            events_table.update_item(
+                Key={'event_id': existing_event['event_id']},
+                UpdateExpression='SET ' + ', '.join(update_expressions),
+                ExpressionAttributeValues=expression_values
+            )
+    except Exception as e:
+        print(f"Error updating existing event: {e}")
+
+def check_dynamo_tables():
+    """Check if DynamoDB tables exist."""
+    try:
+        existing_tables = dynamodb.meta.client.list_tables()['TableNames']
+        return 'event_emails' in existing_tables and 'events' in existing_tables
+    except Exception as e:
+        st.error(f"Error checking DynamoDB tables: {e}")
+        return False
+
+def check_gmail_access():
+    """Check if Gmail API access is working."""
+    try:
+        service = get_gmail_service()
+        if service:
+            service.users().labels().list(userId='me').execute()
+            return True
+        return False
+    except Exception as e:
+        st.error(f"Error checking Gmail access: {e}")
+        return False
+
+def check_aws_access():
+    """Check if AWS access is working."""
+    try:
+        dynamodb.meta.client.list_tables()
+        return True
+    except Exception as e:
+        st.error(f"Error checking AWS access: {e}")
+        return False
+
+def run_setup_script():
+    """Run the DynamoDB setup script."""
+    try:
+        result = subprocess.run(['python3', 'setup_dynamo.py'], capture_output=True, text=True)
+        if result.returncode == 0:
+            st.success("DynamoDB tables created successfully!")
+        else:
+            st.error(f"Error creating tables: {result.stderr}")
+    except Exception as e:
+        st.error(f"Error running setup script: {e}")
+
+def get_event_emails():
+    """Get all event emails from DynamoDB."""
+    try:
+        response = event_emails_table.scan()
+        items = response.get('Items', [])
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(items)
+        if not df.empty:
+            # Convert timestamps to readable dates, handling None values
+            if 'received' in df.columns:
+                df['received'] = pd.to_datetime(df['received'].fillna(0).astype(int), unit='s')
+            if 'processed' in df.columns:
+                df['processed'] = pd.to_datetime(df['processed'].fillna(0).astype(int), unit='s')
+        return df
+    except Exception as e:
+        st.error(f"Error getting event emails: {e}")
+        return pd.DataFrame()
+
+def get_events():
+    """Get all events from DynamoDB."""
+    try:
+        print("Fetching events from DynamoDB...")  # Debug log
+        response = events_table.scan()
+        items = response.get('Items', [])
+        print(f"Found {len(items)} events in DynamoDB")  # Debug log
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(items)
+        if not df.empty:
+            print("Converting timestamps and renaming columns...")  # Debug log
+            # Convert timestamps to readable dates, handling None values
+            if 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date'].fillna(0).astype(int), unit='s')
+            # Rename columns to match expected format
+            df = df.rename(columns={
+                'event_name': 'Event Name',
+                'date': 'Date',
+                'start_time': 'Start Time',
+                'end_time': 'End Time',
+                'city': 'City',
+                'state': 'State',
+                'venue': 'Venue',
+                'address': 'Address',
+                'description': 'Description',
+                'url': 'URL'
+            })
+            # Fill NaN values with empty strings
+            df = df.fillna('')
+            # Sort by date
+            df = df.sort_values('Date', ascending=True)
+            # Select only the display columns
+            display_columns = ['Event Name', 'Date', 'Start Time', 'End Time', 'City', 'State', 'Venue', 'Address', 'Description', 'URL']
+            df = df[display_columns]
+            print(f"Processed DataFrame with {len(df)} rows")  # Debug log
+            print("DataFrame columns:", df.columns.tolist())  # Debug log
+            print("DataFrame sample:", df.head())  # Debug log
+            print("DataFrame info:", df.info())  # Debug log
+        return df
+    except Exception as e:
+        print(f"Error getting events: {e}")  # Debug log
+        return pd.DataFrame()
+
+def get_gmail_service():
+    """Get Gmail API service instance."""
+    try:
+        # Load credentials from the token file
+        creds = None
+        if os.path.exists('token.json'):
+            creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+        
+        # If there are no (valid) credentials available, let the user log in.
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    'credentials.json', SCOPES)
+                creds = flow.run_local_server(port=0)
+            # Save the credentials for the next run
+            with open('token.json', 'w') as token:
+                token.write(creds.to_json())
+        
+        # Build the Gmail service
+        service = build('gmail', 'v1', credentials=creds)
+        return service
+    except Exception as e:
+        print(f"Error getting Gmail service: {e}")
+        return None
+
+def clear_processed_timestamps():
+    """Clear the processed timestamp from all emails in DynamoDB."""
+    try:
+        # Get all emails
+        response = event_emails_table.scan()
+        items = response.get('Items', [])
+        
+        if not items:
+            st.info("No emails found in the database.")
+            return 0
+            
+        cleared_count = 0
+        for item in items:
+            try:
+                # Remove the processed attribute
+                event_emails_table.update_item(
+                    Key={'msg_id': item['msg_id']},
+                    UpdateExpression='REMOVE #p',
+                    ExpressionAttributeNames={
+                        '#p': 'processed'
+                    }
+                )
+                cleared_count += 1
+            except Exception as e:
+                st.error(f"Error clearing processed timestamp for email {item['msg_id']}: {e}")
+                continue
+                
+        return cleared_count
+    except Exception as e:
+        st.error(f"Error in clear_processed_timestamps: {e}")
+        return 0
+
+def clear_qdrant_cluster():
+    """Clear all points from the Qdrant cluster while preserving collection schema."""
+    try:
+        # Initialize Qdrant client
+        client = QdrantClient(
+            url=my_secrets.QDRANT_URL,
+            api_key=my_secrets.QDRANT_API_KEY
+        )
+        
+        # Get all collections
+        collections = client.get_collections().collections
+        
+        for collection in collections:
+            collection_name = collection.name
+            # Delete all points from the collection
+            client.delete(
+                collection_name=collection_name,
+                points_selector=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="id",
+                            match=models.MatchAny(any=[1])  # This will match all points
+                        )
+                    ]
+                )
+            )
+            print(f"Cleared all points from collection: {collection_name}")
+        
+        return True
+    except Exception as e:
+        print(f"Error clearing Qdrant cluster: {e}")
+        return False
+
+def streamlit_interface():
+    """Streamlit interface for the Event Agent."""
+    st.title("Event Agent Dashboard")
+    
+    # Create two main columns for status and actions
+    status_col, action_col = st.columns(2)
+    
+    # System Status Column
+    with status_col:
+        st.header("🔍 System Status")
+        
+        # Gmail Status
+        gmail_status = check_gmail_access()
+        st.metric("Gmail Access", "✅ Connected" if gmail_status else "❌ Disconnected")
+        
+        # Qdrant Status
+        st.metric("Qdrant Status", "✅ Ready")
+        
+        # AWS Status
+        aws_status = check_aws_access()
+        st.metric("AWS Access", "✅ Connected" if aws_status else "❌ Disconnected")
+        
+        # DynamoDB Status
+        dynamo_status = check_dynamo_tables()
+        st.metric("DynamoDB Tables", "✅ Ready" if dynamo_status else "❌ Missing")
+    
+    # System Actions Column
+    with action_col:
+        st.header("⚡ System Actions")
+        
+        # Setup DynamoDB if needed
+        if not dynamo_status:
+            st.warning("DynamoDB tables are not set up. Click the button below to create them.")
+            if st.button("Setup DynamoDB Tables", use_container_width=True):
+                with st.spinner("Setting up DynamoDB tables..."):
+                    run_setup_script()
+                    st.rerun()
+        
+        # Check for New Emails
+        if st.button("Check for New Emails", use_container_width=True):
+            with st.spinner("Fetching new emails from Gmail..."):
+                email_data, _ = extract_emails()
+                if email_data:
+                    write_to_dynamo(email_data)
+        
+        # Clear Qdrant Cluster
+        if st.button("Clear Qdrant Cluster", use_container_width=True):
+            with st.spinner("Clearing Qdrant cluster..."):
+                if clear_qdrant_cluster():
+                    st.success("Qdrant cluster cleared successfully!")
+                else:
+                    st.error("Failed to clear Qdrant cluster. Check logs for details.")
+        
+        # Clear Processed Timestamps
+        if st.button("Clear Processed Timestamps", use_container_width=True):
+            clear_processed_timestamps()
+        
+        # Reprocess Emails
+        if st.button("Reprocess Emails", use_container_width=True):
+            process_emails()
+    
+    # Display event emails
+    st.header("📨 Event Emails")
+    emails_df = get_event_emails()
+    if not emails_df.empty:
+        st.dataframe(emails_df, use_container_width=True)
+    else:
+        st.info("No event emails found.")
+    
+    # Display events
+    st.header("🎯 Events")
+    events_df = get_events()
+    if not events_df.empty:
+        # Add filters
+        col1, col2 = st.columns(2)
+        with col1:
+            date_filter = st.date_input("Filter by date (optional)", value=None)
+            if date_filter is not None:  # Only filter if a date is selected
+                events_df = events_df[events_df['Date'].dt.date == date_filter]
+        
+        with col2:
+            city_filter = st.text_input("Filter by city (optional)")
+            if city_filter:
+                events_df = events_df[events_df['City'].str.contains(city_filter, case=False, na=False)]
+        
+        # Display filtered events
+        st.dataframe(events_df, use_container_width=True)
+    else:
+        st.info("No events found.")
 
 # Main function
 if __name__ == "__main__":
     try:
-        # First, get emails from Gmail
-        email_data, processed_count = extract_emails()
-        if email_data:
-            write_to_sheet(email_data)
-            print(f"Successfully fetched {processed_count} emails from Gmail and written to Emails sheet.")
-        else:
-            print("No new emails found in inbox.")
-            
-        # Then, process emails to extract events
-        process_emails()
+        import streamlit as st
+        streamlit_interface()
+    except ImportError:
+        # If not in Streamlit, run the original main function
+        try:
+            # First, get emails from Gmail
+            email_data, processed_count = extract_emails()
+            if email_data:
+                write_to_dynamo(email_data)
+                print(f"Successfully fetched {processed_count} emails from Gmail and written to DynamoDB.")
+            else:
+                print("No new emails found in inbox.")
+                
+            # Then, process emails to extract events
+            process_emails()
+        except Exception as e:
+            print(f"Error in main execution: {e}")
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error in Streamlit execution: {e}")
