@@ -1,6 +1,6 @@
 # 🤖 Event Agent
 
-An intelligent agent that processes event-related emails, extracts event details, and stores them in DynamoDB. Built with Python, Gmail API, OpenAI, and AWS.
+An intelligent agent that processes event-related emails, extracts event details, and stores them in DynamoDB. Built with Python, Gmail API, OpenAI, and AWS. The application provides a Streamlit interface for viewing and managing events, with the option to export events to Google Sheets.
 
 ## Features
 
@@ -9,6 +9,8 @@ An intelligent agent that processes event-related emails, extracts event details
 - 🗄️ **DynamoDB Storage**: Stores emails and events in AWS DynamoDB for efficient querying
 - 🎯 **Event Management**: Tracks and manages events with detailed information
 - 🎨 **Streamlit Interface**: Beautiful web interface for monitoring and managing the system
+- **Google Sheets Export**: Export events to Google Sheets for additional analysis
+- **Qdrant Integration**: Vector search capabilities for enhanced event matching
 
 ## Architecture
 
@@ -56,6 +58,11 @@ graph LR
 - AWS Account with DynamoDB access
 - Gmail Account
 - OpenAI API Key
+- Google Cloud project with:
+  - Gmail API enabled
+  - Google Sheets API enabled
+  - OAuth 2.0 credentials configured
+- Qdrant instance (optional, for vector search)
 
 ## Setup
 
@@ -88,6 +95,13 @@ graph LR
      
      # OpenAI API key
      openai_by = "your_openai_api_key"
+     
+     # Google Sheets
+     SPREADSHEET_ID = "your_google_sheets_id"
+     
+     # Qdrant
+     QDRANT_URL = "your_qdrant_url"
+     QDRANT_API_KEY = "your_qdrant_api_key"
      ```
    - ⚠️ **Important**: Never commit `my_secrets.py` to version control. It's already in `.gitignore`.
 
@@ -116,11 +130,12 @@ graph LR
    ```
 
 2. **Using the Interface**
-   - Check system status (Gmail, AWS, DynamoDB)
+   - Check system status (Gmail, AWS, DynamoDB, Qdrant)
    - Setup DynamoDB tables if needed
    - Process new emails
    - View event emails and extracted events
    - Filter and sort events
+   - Export events to Google Sheets
 
 ## Data Storage
 
@@ -181,3 +196,24 @@ graph LR
 3. Commit your changes
 4. Push to the branch
 5. Create a Pull Request
+
+## Google Sheets Integration
+
+The application can export events to Google Sheets for additional analysis. To use this feature:
+
+1. Ensure you have a Google Cloud project with the Sheets API enabled
+2. Configure the `SPREADSHEET_ID` in `my_secrets.py`
+3. The first time you use the export feature, you'll need to authorize the application
+4. Click the "Export to Google Sheets" button to export current events
+
+The exported data will include all event fields:
+- Event Name
+- Date
+- Start Time
+- End Time
+- City
+- State
+- Venue
+- Address
+- Description
+- URL

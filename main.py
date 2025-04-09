@@ -24,7 +24,8 @@ from qdrant_client.http import models
 # Gmail API SCOPES
 SCOPES = [
     'https://www.googleapis.com/auth/gmail.readonly',
-    'https://www.googleapis.com/auth/gmail.modify'
+    'https://www.googleapis.com/auth/gmail.modify',
+    'https://www.googleapis.com/auth/spreadsheets'  # Added for Google Sheets access
 ]
 
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'secrets')) #REPLACE WITH YOUR PATH
@@ -33,14 +34,37 @@ import my_secrets #REPLACE WITH YOUR SECRETS FILE NAME
 
 # Load credentials for Gmail and Sheets APIs
 def load_credentials():
+    """Load or refresh Google API credentials."""
     creds = None
     if os.path.exists('token.json'):
-        creds = Credentials.from_authorized_user_file('token.json')
+        try:
+            creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+            # Verify the credentials have all required scopes
+            if not all(scope in creds.scopes for scope in SCOPES):
+                print("Missing required scopes, refreshing credentials...")
+                creds = None
+        except Exception as e:
+            print(f"Error loading credentials: {e}")
+            creds = None
+    
     if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            raise Exception("Authorization required. Run Google OAuth process in oauth_setup.py.")
+        try:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                print("No valid credentials found, starting OAuth flow...")
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    'credentials.json', SCOPES)
+                creds = flow.run_local_server(port=0)
+            
+            # Save the credentials
+            with open('token.json', 'w') as token:
+                token.write(creds.to_json())
+            print("Credentials saved successfully")
+        except Exception as e:
+            print(f"Error in OAuth flow: {e}")
+            raise Exception("Failed to obtain valid credentials. Please try again.")
+    
     return creds
 
 def format_datetime(date_str):
@@ -884,6 +908,71 @@ def clear_qdrant_cluster():
         print(f"Error clearing Qdrant cluster: {e}")
         return False
 
+def check_google_sheets_access():
+    """Check if Google Sheets API access is working."""
+    try:
+        creds = load_credentials()
+        service = build('sheets', 'v4', credentials=creds)
+        # Try to access the spreadsheet
+        service.spreadsheets().get(spreadsheetId=my_secrets.SPREADSHEET_ID).execute()
+        return True
+    except Exception as e:
+        print(f"Error checking Google Sheets access: {e}")
+        return False
+
+def export_to_google_sheets():
+    """Export events from DynamoDB to Google Sheets."""
+    try:
+        # Verify Google Sheets access first
+        if not check_google_sheets_access():
+            st.error("Unable to access Google Sheets. Please check your credentials and try again.")
+            return False
+            
+        # Get events from DynamoDB
+        events_df = get_events()
+        if events_df.empty:
+            st.warning("No events found to export.")
+            return False
+        
+        # Convert Timestamp objects to strings
+        if 'Date' in events_df.columns:
+            events_df['Date'] = events_df['Date'].dt.strftime('%m/%d/%Y')
+        
+        # Convert DataFrame to list of lists for Google Sheets
+        events_data = [events_df.columns.tolist()]  # Headers
+        events_data.extend(events_df.values.tolist())
+        
+        # Get credentials and build service
+        creds = load_credentials()
+        service = build('sheets', 'v4', credentials=creds)
+        sheet = service.spreadsheets()
+        
+        try:
+            # Clear existing data in the Events sheet
+            sheet.values().clear(
+                spreadsheetId=my_secrets.SPREADSHEET_ID,
+                range="Events!A:J"
+            ).execute()
+            
+            # Write new data
+            sheet.values().update(
+                spreadsheetId=my_secrets.SPREADSHEET_ID,
+                range="Events!A1",
+                valueInputOption="RAW",
+                body={"values": events_data}
+            ).execute()
+            
+            return True
+        except Exception as e:
+            print(f"Error in Google Sheets operation: {e}")
+            st.error(f"Error in Google Sheets operation: {str(e)}")
+            return False
+            
+    except Exception as e:
+        print(f"Error exporting to Google Sheets: {e}")
+        st.error(f"Error exporting to Google Sheets: {str(e)}")
+        return False
+
 def streamlit_interface():
     """Streamlit interface for the Event Agent."""
     st.title("Event Agent Dashboard")
@@ -944,6 +1033,14 @@ def streamlit_interface():
         # Reprocess Emails
         if st.button("Reprocess Emails", use_container_width=True):
             process_emails()
+            
+        # Export to Google Sheets
+        if st.button("Export to Google Sheets", use_container_width=True):
+            with st.spinner("Exporting events to Google Sheets..."):
+                if export_to_google_sheets():
+                    st.success("Events exported to Google Sheets successfully!")
+                else:
+                    st.error("Failed to export events to Google Sheets. Check logs for details.")
     
     # Display event emails
     st.header("📨 Event Emails")
