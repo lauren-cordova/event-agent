@@ -30,6 +30,7 @@ graph LR
 
     subgraph Output [📤 Output]
         UI([💬 Streamlit UI])
+        GS([Google Sheets])
     end
 
     G -->|New Emails| E
@@ -40,6 +41,8 @@ graph LR
     W -->|Extra Info| D
     D -->|Stores Events| DB
     DB -->|Structured Data| UI
+    DB -->|Structured Data| GS
+    UI -->|Export Data Command| GS
 
     style G fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
     style E fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
@@ -48,6 +51,7 @@ graph LR
     style D fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
     style UI fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
     style DB fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
+    style GS fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
 
     linkStyle default stroke:#fff,stroke-width:2px
 ```
