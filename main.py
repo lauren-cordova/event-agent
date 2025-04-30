@@ -554,6 +554,10 @@ def write_event_to_dynamo(event_data):
         # Convert date string to timestamp if it's in the correct format
         try:
             event_date = datetime_to_timestamp(event_data[1])
+            # Check if event date is in the past
+            if event_date < int(time.time()):
+                print(f"Skipping past event: {event_data[0]} on {event_data[1]}")
+                return
         except:
             event_date = int(time.time())  # Use current time if date parsing fails
         
@@ -724,13 +728,18 @@ def check_dynamo_tables():
 def check_gmail_access():
     """Check if Gmail API access is working."""
     try:
+        print("Attempting to get Gmail service...")  # Debug log
         service = get_gmail_service()
         if service:
+            print("Gmail service obtained, testing connection...")  # Debug log
             service.users().labels().list(userId='me').execute()
+            print("Gmail connection successful!")  # Debug log
             return True
+        print("Failed to get Gmail service")  # Debug log
         return False
     except Exception as e:
-        st.error(f"Error checking Gmail access: {e}")
+        print(f"Error checking Gmail access: {str(e)}")  # Debug log
+        st.error(f"Error checking Gmail access: {str(e)}")
         return False
 
 def check_aws_access():
@@ -819,28 +828,42 @@ def get_events():
 def get_gmail_service():
     """Get Gmail API service instance."""
     try:
+        print("Loading credentials from token.json...")  # Debug log
         # Load credentials from the token file
         creds = None
         if os.path.exists('token.json'):
+            print("token.json exists, attempting to load credentials...")  # Debug log
             creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+            print("Credentials loaded from token.json")  # Debug log
+        else:
+            print("token.json not found")  # Debug log
         
         # If there are no (valid) credentials available, let the user log in.
         if not creds or not creds.valid:
+            print("Credentials not valid, attempting to refresh or get new ones...")  # Debug log
             if creds and creds.expired and creds.refresh_token:
+                print("Refreshing expired credentials...")  # Debug log
                 creds.refresh(Request())
             else:
+                print("No valid credentials found, starting OAuth flow...")  # Debug log
+                if not os.path.exists('credentials.json'):
+                    print("credentials.json not found!")  # Debug log
+                    return None
                 flow = InstalledAppFlow.from_client_secrets_file(
                     'credentials.json', SCOPES)
                 creds = flow.run_local_server(port=0)
             # Save the credentials for the next run
+            print("Saving credentials to token.json...")  # Debug log
             with open('token.json', 'w') as token:
                 token.write(creds.to_json())
         
         # Build the Gmail service
+        print("Building Gmail service...")  # Debug log
         service = build('gmail', 'v1', credentials=creds)
+        print("Gmail service built successfully")  # Debug log
         return service
     except Exception as e:
-        print(f"Error getting Gmail service: {e}")
+        print(f"Error getting Gmail service: {str(e)}")  # Debug log
         return None
 
 def clear_processed_timestamps():
@@ -973,6 +996,27 @@ def export_to_google_sheets():
         st.error(f"Error exporting to Google Sheets: {str(e)}")
         return False
 
+def refresh_gmail_credentials():
+    """Refresh Gmail API credentials by running the OAuth flow again."""
+    try:
+        print("Starting OAuth flow to refresh credentials...")
+        if not os.path.exists('credentials.json'):
+            st.error("credentials.json not found! Please ensure it exists in the project directory.")
+            return False
+            
+        flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
+        creds = flow.run_local_server(port=0)
+        
+        # Save the new credentials
+        with open('token.json', 'w') as token:
+            token.write(creds.to_json())
+        print("New credentials saved successfully")
+        return True
+    except Exception as e:
+        print(f"Error refreshing credentials: {str(e)}")
+        st.error(f"Error refreshing credentials: {str(e)}")
+        return False
+
 def streamlit_interface():
     """Streamlit interface for the Event Agent."""
     st.title("Event Agent Dashboard")
@@ -987,6 +1031,16 @@ def streamlit_interface():
         # Gmail Status
         gmail_status = check_gmail_access()
         st.metric("Gmail Access", "✅ Connected" if gmail_status else "❌ Disconnected")
+        
+        # If Gmail is disconnected, show refresh button
+        if not gmail_status:
+            if st.button("🔄 Refresh Gmail Credentials", use_container_width=True):
+                with st.spinner("Refreshing Gmail credentials..."):
+                    if refresh_gmail_credentials():
+                        st.success("Credentials refreshed successfully! Please refresh the page.")
+                        st.rerun()
+                    else:
+                        st.error("Failed to refresh credentials. Check the logs for details.")
         
         # Qdrant Status
         st.metric("Qdrant Status", "✅ Ready")
