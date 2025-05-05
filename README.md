@@ -53,7 +53,7 @@ graph LR
     style DB fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
     style GS fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
 
-    linkStyle default stroke:#fff,stroke-width:2px
+    linkStyle default stroke-dasharray: 9,5,stroke-dashoffset: 900,animation: dash 25s linear infinite;
 ```
 
 ## Prerequisites
