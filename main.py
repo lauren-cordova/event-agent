@@ -354,7 +354,7 @@ Each event should be an object with these exact fields:
     "Description": "string",
     "URL": "string"
 }
-Only report clean start and end times, not timezones. Report State as a 2 letter abbreviation. Report date as MM/DD/YYYY. The word Location is not a Venue or Address. Return ONLY the JSON array, no other text. If no events are found, return an empty array [].
+Only report clean start and end times including AM/PM but not timezone. Report State as a 2 letter abbreviation. Report date as MM/DD/YYYY of the event itself (not the email date). If year is unknown, assume event is current year. The word Location is not a Venue or Address. Return ONLY the JSON array, no other text. If no events are found, return an empty array [].
 
 IMPORTANT: Look for any mention of events, gatherings, meetings, or activities in the text. Even if the information is incomplete, extract what you can find. If you see a date and time mentioned, it's likely an event. If you see a location mentioned, it's likely a venue. Extract as much information as possible, even if some fields are empty."""},
                 {"role": "user", "content": plain_text}
@@ -558,11 +558,8 @@ def write_event_to_dynamo(event_data):
         # Convert date string to timestamp if it's in the correct format
         try:
             event_date = datetime_to_timestamp(event_data[1])
-            # Check if event date is in the past
-            if event_date < int(time.time()):
-                print(f"Skipping past event: {event_data[0]} on {event_data[1]}")
-                return
         except:
+            print(f"Error converting date string to timestamp: {event_data[1]}")
             event_date = int(time.time())  # Use current time if date parsing fails
         
         item = {
@@ -595,10 +592,7 @@ def clean_email_text(text):
     
     # Remove HTML tags
     text = re.sub(r'<[^>]+>', ' ', text)
-    
-    # Remove URLs
-    text = re.sub(r'http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*\\(\\),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+', ' ', text)
-    
+
     # Remove email addresses
     text = re.sub(r'[\w\.-]+@[\w\.-]+\.\w+', ' ', text)
     
@@ -1071,13 +1065,66 @@ def streamlit_interface():
     """Streamlit interface for the Event Agent."""
     st.title("Event Agent Dashboard")
     
-    # Create two main columns for status and actions
-    status_col, action_col = st.columns(2)
+    # 1. Database Configuration Section
+    st.header("🗄️ Database Configuration")
     
-    # System Status Column
-    with status_col:
-        st.header("🔍 System Status")
+    # Create columns for status and actions
+    db_status_col, db_action_col = st.columns(2)
+    
+    with db_status_col:
+        # DynamoDB Status
+        dynamo_status = check_dynamo_tables()
+        st.metric("DynamoDB Tables", "✅ Ready" if dynamo_status else "❌ Missing")
         
+        # AWS Status
+        aws_status = check_aws_access()
+        st.metric("AWS Access", "✅ Connected" if aws_status else "❌ Disconnected")
+        
+        # Qdrant Status
+        qdrant_configured = hasattr(my_secrets, 'QDRANT_URL') and hasattr(my_secrets, 'QDRANT_API_KEY')
+        if qdrant_configured:
+            st.metric("Qdrant Status", "✅ Configured")
+        else:
+            st.metric("Qdrant Status", "⚠️ Not Configured")
+    
+    with db_action_col:
+        # Setup DynamoDB if needed
+        if not dynamo_status:
+            st.warning("DynamoDB tables are not set up.")
+            if st.button("Setup DynamoDB Tables", use_container_width=True):
+                with st.spinner("Setting up DynamoDB tables..."):
+                    run_setup_script()
+                    st.rerun()
+        
+        # Clear DynamoDB Data
+        if st.button("🗑️ Clear DynamoDB Data", use_container_width=True):
+            with st.spinner("Clearing DynamoDB data..."):
+                success, emails_cleared, events_cleared = clear_dynamo_data()
+                if success:
+                    st.success(f"DynamoDB cleared successfully! Removed {emails_cleared} emails and {events_cleared} events.")
+                    st.rerun()
+                else:
+                    st.error("Failed to clear DynamoDB data. Check the terminal logs for details.")
+        
+        # Clear Qdrant Cluster
+        if st.button("🗑️ Clear Qdrant Cluster", use_container_width=True):
+            with st.spinner("Clearing Qdrant cluster..."):
+                if not qdrant_configured:
+                    st.warning("Qdrant is not configured.")
+                else:
+                    result = clear_qdrant_cluster()
+                    if result:
+                        st.success("Qdrant cluster cleared successfully!")
+                    else:
+                        st.error("Failed to clear Qdrant cluster. Check the terminal logs for details.")
+    
+    # 2. Gmail Configuration Section
+    st.header("📧 Gmail Configuration")
+    
+    # Create columns for status and actions
+    gmail_status_col, gmail_action_col = st.columns(2)
+    
+    with gmail_status_col:
         # Gmail Status
         gmail_status = check_gmail_access()
         st.metric("Gmail Access", "✅ Connected" if gmail_status else "❌ Disconnected")
@@ -1091,89 +1138,56 @@ def streamlit_interface():
                         st.rerun()
                     else:
                         st.error("Failed to refresh credentials. Check the logs for details.")
-        
-        # Qdrant Status - Check if credentials are configured
-        qdrant_configured = hasattr(my_secrets, 'QDRANT_URL') and hasattr(my_secrets, 'QDRANT_API_KEY')
-        if qdrant_configured:
-            st.metric("Qdrant Status", "✅ Configured")
-        else:
-            st.metric("Qdrant Status", "⚠️ Not Configured")
-        
-        # AWS Status
-        aws_status = check_aws_access()
-        st.metric("AWS Access", "✅ Connected" if aws_status else "❌ Disconnected")
-        
-        # DynamoDB Status
-        dynamo_status = check_dynamo_tables()
-        st.metric("DynamoDB Tables", "✅ Ready" if dynamo_status else "❌ Missing")
     
-    # System Actions Column
-    with action_col:
-        st.header("⚡ System Actions")
-        
-        # Setup DynamoDB if needed
-        if not dynamo_status:
-            st.warning("DynamoDB tables are not set up. Click the button below to create them.")
-            if st.button("Setup DynamoDB Tables", use_container_width=True):
-                with st.spinner("Setting up DynamoDB tables..."):
-                    run_setup_script()
-                    st.rerun()
-        
+    with gmail_action_col:
         # Check for New Emails
-        if st.button("Check for New Emails", use_container_width=True):
+        if st.button("📥 Check for New Emails", use_container_width=True):
             with st.spinner("Fetching new emails from Gmail..."):
-                email_data, _ = extract_emails()
+                email_data, processed_count = extract_emails()
                 if email_data:
                     write_to_dynamo(email_data)
-        
-        # Clear Qdrant Cluster
-        if st.button("Clear Qdrant Cluster", use_container_width=True):
-            with st.spinner("Clearing Qdrant cluster..."):
-                if not qdrant_configured:
-                    st.warning("Qdrant is not configured. Please add QDRANT_URL and QDRANT_API_KEY to my_secrets.py")
+                    st.success(f"Successfully fetched {processed_count} emails from Gmail!")
                 else:
-                    result = clear_qdrant_cluster()
-                    if result:
-                        st.success("Qdrant cluster cleared successfully!")
-                    else:
-                        st.error("Failed to clear Qdrant cluster. Check the terminal logs for details.")
+                    st.info("No new emails found in inbox.")
         
-        # Clear DynamoDB Data
-        if st.button("🗑️ Clear DynamoDB Data", use_container_width=True):
-            with st.spinner("Clearing DynamoDB data..."):
-                success, emails_cleared, events_cleared = clear_dynamo_data()
-                if success:
-                    st.success(f"DynamoDB cleared successfully! Removed {emails_cleared} emails and {events_cleared} events.")
-                    st.rerun()
-                else:
-                    st.error("Failed to clear DynamoDB data. Check the terminal logs for details.")
-        
-        # Clear Processed Timestamps
-        if st.button("Clear Processed Timestamps", use_container_width=True):
-            clear_processed_timestamps()
-        
-        # Reprocess Emails
-        if st.button("Reprocess Emails", use_container_width=True):
-            process_emails()
-            
-        # Export to Google Sheets
-        if st.button("Export to Google Sheets", use_container_width=True):
-            with st.spinner("Exporting events to Google Sheets..."):
-                if export_to_google_sheets():
-                    st.success("Events exported to Google Sheets successfully!")
-                else:
-                    st.error("Failed to export events to Google Sheets. Check logs for details.")
+        # Process Emails
+        if st.button("⚙️ Process Emails", use_container_width=True):
+            with st.spinner("Processing emails to extract events..."):
+                # First clear processed timestamps
+                cleared_count = clear_processed_timestamps()
+                if cleared_count > 0:
+                    st.info(f"Cleared processed timestamps from {cleared_count} emails.")
+                
+                # Then process emails
+                process_emails()
+                st.success("Email processing completed!")
     
-    # Display event emails
-    st.header("📨 Event Emails")
+    # 3. Data Access Section
+    st.header("📊 Data Access")
+    st.markdown("### 📋 Google Sheet")
+
+    # Export to Google Sheets
+    if st.button("📤 Export to Google Sheets", use_container_width=True):
+        with st.spinner("Exporting events to Google Sheets..."):
+            if export_to_google_sheets():
+                st.success("Events exported to Google Sheets successfully!")
+            else:
+                st.error("Failed to export events to Google Sheets. Check logs for details.")
+
+    # Google Sheet Link
+    if st.button("📋 Open Google Sheet", use_container_width=True):
+        st.markdown(f'<a href="https://docs.google.com/spreadsheets/d/1Cun2UfOv0SXQWmEMH54boqnL_e0Z98IBJUZPOqU9zac/edit?gid=924009041#gid=924009041" target="_blank">Click here to open Google Sheet</a>', unsafe_allow_html=True)
+        st.success("Opening Google Sheet in new tab...")
+    
+    # Data Tables
+    st.markdown("### 📨 Event Emails")
     emails_df = get_event_emails()
     if not emails_df.empty:
         st.dataframe(emails_df, use_container_width=True)
     else:
         st.info("No event emails found.")
     
-    # Display events
-    st.header("🎯 Events")
+    st.markdown("### 🎯 Events")
     events_df = get_events()
     if not events_df.empty:
         # Add filters
