@@ -354,7 +354,7 @@ Each event should be an object with these exact fields:
     "Description": "string",
     "URL": "string"
 }
-Only report clean start and end times including AM/PM but not timezone. Report State as a 2 letter abbreviation. Report date as MM/DD/YYYY of the event itself (not the email date). If year is unknown, assume event is current year. The word Location is not a Venue or Address. Return ONLY the JSON array, no other text. If no events are found, return an empty array [].
+Only report clean start and end times including AM/PM but not timezones. Report State as a 2 letter abbreviation. Report date as MM/DD/YYYY of the event itself (not the email date). If year is unknown, assume event is current year. The word Location is not a Venue or Address. Return ONLY the JSON array, no other text. If no events are found, return an empty array [].
 
 IMPORTANT: Look for any mention of events, gatherings, meetings, or activities in the text. Even if the information is incomplete, extract what you can find. If you see a date and time mentioned, it's likely an event. If you see a location mentioned, it's likely a venue. Extract as much information as possible, even if some fields are empty."""},
                 {"role": "user", "content": plain_text}
@@ -1176,7 +1176,7 @@ def streamlit_interface():
 
     # Google Sheet Link
     if st.button("📋 Open Google Sheet", use_container_width=True):
-        st.markdown(f'<a href="https://docs.google.com/spreadsheets/d/1Cun2UfOv0SXQWmEMH54boqnL_e0Z98IBJUZPOqU9zac/edit?gid=924009041#gid=924009041" target="_blank">Click here to open Google Sheet</a>', unsafe_allow_html=True)
+        st.markdown(f'<a href="https://docs.google.com/spreadsheets/d/' + my_secrets.SPREADSHEET_ID + '" target="_blank">Click here to open Google Sheet</a>', unsafe_allow_html=True)
         st.success("Opening Google Sheet in new tab...")
     
     # Data Tables

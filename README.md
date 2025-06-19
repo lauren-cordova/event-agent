@@ -26,6 +26,7 @@ graph LR
         W([Web<br>Scraper])
         D([Data<br>Enricher])
         DB([🗄️ DynamoDB])
+        Q([🔍 Qdrant])
     end
 
     subgraph Output [📤 Output]
@@ -40,8 +41,10 @@ graph LR
     X -->|URLs| W
     W -->|Extra Info| D
     D -->|Stores Events| DB
+    D -->|Vector Embeddings| Q
     DB -->|Structured Data| UI
     DB -->|Structured Data| GS
+    Q -->|Vector Search| UI
     UI -->|Export Data Command| GS
 
     style G fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
@@ -52,6 +55,7 @@ graph LR
     style UI fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
     style DB fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
     style GS fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
+    style Q fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
 
     linkStyle default stroke-dasharray: 9,5,stroke-dashoffset: 900,animation: dash 25s linear infinite;
 ```
