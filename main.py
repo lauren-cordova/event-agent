@@ -21,6 +21,10 @@ from openai import OpenAI
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
+# Import Secrets
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../secrets')))
+import my_secrets
+
 # Gmail API SCOPES
 SCOPES = [
     'https://www.googleapis.com/auth/gmail.readonly',
@@ -901,11 +905,19 @@ def clear_processed_timestamps():
 def clear_qdrant_cluster():
     """Clear all points from the Qdrant cluster while preserving collection schema."""
     try:
-        # Initialize Qdrant client
-        client = QdrantClient(
-            url=my_secrets.QDRANT_URL,
-            api_key=my_secrets.QDRANT_API_KEY
-        )
+        # Check if Qdrant credentials are configured
+        if not hasattr(my_secrets, 'QDRANT_URL') or not hasattr(my_secrets, 'QDRANT_API_KEY'):
+            print("Qdrant credentials not configured in my_secrets.py")
+            return False
+        # Initialize Qdrant client with credentials from my_secrets
+        try:
+            client = QdrantClient(
+                url=my_secrets.QDRANT_URL,
+                api_key=my_secrets.QDRANT_API_KEY
+            )
+        except Exception as e:
+            print(f"Failed to connect to Qdrant: {str(e)}")
+            return False
         
         # Get all collections
         collections = client.get_collections().collections
@@ -1017,6 +1029,44 @@ def refresh_gmail_credentials():
         st.error(f"Error refreshing credentials: {str(e)}")
         return False
 
+def clear_dynamo_data():
+    """Clear all data from DynamoDB tables."""
+    try:
+        print("Clearing DynamoDB data...")
+        
+        # Clear event_emails table
+        print("Clearing event_emails table...")
+        response = event_emails_table.scan()
+        items = response.get('Items', [])
+        cleared_emails = 0
+        for item in items:
+            try:
+                event_emails_table.delete_item(Key={'msg_id': item['msg_id']})
+                cleared_emails += 1
+            except Exception as e:
+                print(f"Error deleting email {item['msg_id']}: {str(e)}")
+                continue
+        
+        # Clear events table
+        print("Clearing events table...")
+        response = events_table.scan()
+        items = response.get('Items', [])
+        cleared_events = 0
+        for item in items:
+            try:
+                events_table.delete_item(Key={'event_id': item['event_id']})
+                cleared_events += 1
+            except Exception as e:
+                print(f"Error deleting event {item['event_id']}: {str(e)}")
+                continue
+        
+        print(f"Successfully cleared {cleared_emails} emails and {cleared_events} events from DynamoDB")
+        return True, cleared_emails, cleared_events
+        
+    except Exception as e:
+        print(f"Error clearing DynamoDB data: {str(e)}")
+        return False, 0, 0
+
 def streamlit_interface():
     """Streamlit interface for the Event Agent."""
     st.title("Event Agent Dashboard")
@@ -1042,8 +1092,12 @@ def streamlit_interface():
                     else:
                         st.error("Failed to refresh credentials. Check the logs for details.")
         
-        # Qdrant Status
-        st.metric("Qdrant Status", "✅ Ready")
+        # Qdrant Status - Check if credentials are configured
+        qdrant_configured = hasattr(my_secrets, 'QDRANT_URL') and hasattr(my_secrets, 'QDRANT_API_KEY')
+        if qdrant_configured:
+            st.metric("Qdrant Status", "✅ Configured")
+        else:
+            st.metric("Qdrant Status", "⚠️ Not Configured")
         
         # AWS Status
         aws_status = check_aws_access()
@@ -1075,10 +1129,24 @@ def streamlit_interface():
         # Clear Qdrant Cluster
         if st.button("Clear Qdrant Cluster", use_container_width=True):
             with st.spinner("Clearing Qdrant cluster..."):
-                if clear_qdrant_cluster():
-                    st.success("Qdrant cluster cleared successfully!")
+                if not qdrant_configured:
+                    st.warning("Qdrant is not configured. Please add QDRANT_URL and QDRANT_API_KEY to my_secrets.py")
                 else:
-                    st.error("Failed to clear Qdrant cluster. Check logs for details.")
+                    result = clear_qdrant_cluster()
+                    if result:
+                        st.success("Qdrant cluster cleared successfully!")
+                    else:
+                        st.error("Failed to clear Qdrant cluster. Check the terminal logs for details.")
+        
+        # Clear DynamoDB Data
+        if st.button("🗑️ Clear DynamoDB Data", use_container_width=True):
+            with st.spinner("Clearing DynamoDB data..."):
+                success, emails_cleared, events_cleared = clear_dynamo_data()
+                if success:
+                    st.success(f"DynamoDB cleared successfully! Removed {emails_cleared} emails and {events_cleared} events.")
+                    st.rerun()
+                else:
+                    st.error("Failed to clear DynamoDB data. Check the terminal logs for details.")
         
         # Clear Processed Timestamps
         if st.button("Clear Processed Timestamps", use_container_width=True):
