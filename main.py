@@ -161,8 +161,8 @@ def extract_emails():
 
     return email_data, processed_count
 
+# Truncate text to ensure it doesn't exceed Google Sheets' character limit of 50,000
 def truncate_text(text, max_length=50000):
-    """Truncate text to ensure it doesn't exceed Google Sheets' character limit of 50,000."""
     if text and len(text) > max_length:
         return text[:max_length - 15] + "... (truncated)"  # -15 to ensure room for truncation message
     return text
@@ -205,8 +205,8 @@ def write_to_sheet(email_data):
             body=body
         ).execute()
 
+# Sanitize URL to ensure proper format
 def sanitize_url(url):
-    """Sanitize URL to ensure proper format."""
     if not url:
         return ""
     # Fix common URL issues
@@ -216,8 +216,8 @@ def sanitize_url(url):
     url = url.split('?')[0]
     return url
 
+# Fetch missing data from event URL using OpenAI with rate limiting
 def fetch_missing_data(url, missing_fields):
-    """Fetch missing data from event URL using OpenAI with rate limiting."""
     try:
         # Sanitize URL first
         url = sanitize_url(url)
