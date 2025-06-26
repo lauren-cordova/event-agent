@@ -1,16 +1,16 @@
 # 🤖 Event Agent
 
-An intelligent agent that processes event-related emails, extracts event details, and stores them in DynamoDB. Built with Python, Gmail API, OpenAI, and AWS. The application provides a Streamlit interface for viewing and managing events, with the option to export events to Google Sheets.
+An intelligent agent that processes event-related emails, extracts event details, and stores them in a hybrid database architecture. Built with Python, Gmail API, OpenAI, AWS DynamoDB, and Qdrant vector database. The application provides a Streamlit interface for viewing and managing events, with the option to export events to Google Sheets.
 
 ## Features
 
 - 📧 **Email Processing**: Automatically fetches and processes event-related emails from Gmail
 - 🤖 **AI-Powered Extraction**: Uses OpenAI to intelligently extract event details from email content
-- 🗄️ **DynamoDB Storage**: Stores emails and events in AWS DynamoDB for efficient querying
+- 🗄️ **Hybrid Storage**: Stores emails in Qdrant (vector database) and events in DynamoDB
 - 🎯 **Event Management**: Tracks and manages events with detailed information
 - 🎨 **Streamlit Interface**: Beautiful web interface for monitoring and managing the system
-- **Google Sheets Export**: Export events to Google Sheets for additional analysis
-- **Qdrant Integration**: Vector search capabilities for enhanced event matching
+- 📊 **Google Sheets Export**: Export events to Google Sheets for additional analysis
+- 🔍 **Vector Search**: Qdrant integration for enhanced email storage and retrieval
 
 ## Architecture
 
@@ -25,8 +25,8 @@ graph LR
         X([Event<br>Extractor])
         W([Web<br>Scraper])
         D([Data<br>Enricher])
-        DB([🗄️ DynamoDB])
-        Q([🔍 Qdrant])
+        DB([🗄️ DynamoDB<br>Events])
+        Q([🔍 Qdrant<br>Emails])
     end
 
     subgraph Output [📤 Output]
@@ -35,16 +35,15 @@ graph LR
     end
 
     G -->|New Emails| E
-    E -->|Extracted Text| DB
-    DB -->|Stored Email Data| X
+    E -->|Extracted Text| Q
+    Q -->|Stored Email Data| X
     X -->|Event Data| D
     X -->|URLs| W
     W -->|Extra Info| D
     D -->|Stores Events| DB
-    D -->|Vector Embeddings| Q
+    Q -->|Vector Search| UI
     DB -->|Structured Data| UI
     DB -->|Structured Data| GS
-    Q -->|Vector Search| UI
     UI -->|Export Data Command| GS
 
     style G fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
@@ -70,7 +69,7 @@ graph LR
   - Gmail API enabled
   - Google Sheets API enabled
   - OAuth 2.0 credentials configured
-- Qdrant instance (optional, for vector search)
+- Qdrant instance (required for email storage)
 
 ## Setup
 
@@ -97,9 +96,9 @@ graph LR
      CLIENT_SECRET = "your_client_secret"
      
      # AWS credentials
-     aws_access_key_id = "your_aws_access_key"
-     aws_secret_access_key = "your_aws_secret_key"
-     aws_region = "your_aws_region"
+     event_agent_aws_access_key_id = "your_aws_access_key"
+     event_agent_aws_secret_access_key = "your_aws_secret_key"
+     event_agent_aws_region = "your_aws_region"
      
      # OpenAI API key
      openai_by = "your_openai_api_key"
@@ -107,7 +106,7 @@ graph LR
      # Google Sheets
      SPREADSHEET_ID = "your_google_sheets_id"
      
-     # Qdrant
+     # Qdrant Vector Database
      QDRANT_URL = "your_qdrant_url"
      QDRANT_API_KEY = "your_qdrant_api_key"
      ```
@@ -118,17 +117,17 @@ graph LR
    - Download credentials.json
    - Run OAuth setup:
      ```bash
-     python3 oauth_setup.py
+     python3 setup.py
      ```
 
-5. **Set up DynamoDB**
+5. **Set up DynamoDB and Qdrant**
    - Run the setup script:
      ```bash
-     python3 setup_dynamo.py
+     python3 setup.py
      ```
-   - This creates two tables:
-     - `event_emails`: Stores email data
-     - `events`: Stores extracted event information
+   - This creates:
+     - DynamoDB `events` table: Stores extracted event information
+     - Qdrant `emails` collection: Stores email data with vector embeddings
 
 ## Usage
 
@@ -147,18 +146,26 @@ graph LR
 
 ## Data Storage
 
-### Event Emails Table
-- `msg_id`: Unique message ID (Primary Key)
-- `received`: Timestamp when email was received
-- `sender`: Email sender
-- `subject`: Email subject
-- `body`: Email body content
-- `processed`: Timestamp when email was processed
+### Qdrant Email Storage
+- **Collection**: `emails`
+- **Vector Size**: 1536 (OpenAI embedding size)
+- **Distance Metric**: Cosine
+- **Data Types**:
+  - `full_email`: Complete email with embedding
+  - `email_chunk`: Email body chunks for better analysis
+- **Fields**:
+  - `msg_id`: Unique message ID
+  - `received`: Timestamp when email was received
+  - `from_email`: Email sender
+  - `subject`: Email subject
+  - `body`: Email body content
+  - `processed`: Timestamp when email was processed
+  - `type`: Data type (full_email or email_chunk)
 
-### Events Table
+### DynamoDB Events Table
 - `event_id`: Unique event ID (Primary Key)
 - `event_name`: Name of the event
-- `date`: Event date
+- `date`: Event date (timestamp)
 - `start_time`: Event start time
 - `end_time`: Event end time
 - `city`: Event city
@@ -173,7 +180,7 @@ graph LR
 ### Gmail API Issues
 1. **Token Expired/Revoked**
    - Delete `token.json`
-   - Run `python3 oauth_setup.py`
+   - Run `python3 setup.py`
    - Re-authenticate with Gmail
 
 2. **Insufficient Permissions**
@@ -183,12 +190,23 @@ graph LR
 
 ### DynamoDB Issues
 1. **Tables Not Found**
-   - Run `python3 setup_dynamo.py`
+   - Run `python3 setup.py`
    - Verify AWS credentials in `my_secrets.py`
 
 2. **Access Denied**
    - Check AWS IAM permissions
    - Verify region matches your DynamoDB tables
+
+### Qdrant Issues
+1. **Collection Not Found**
+   - The application automatically creates the `emails` collection
+   - Check Qdrant connection and credentials
+   - Verify `QDRANT_URL` and `QDRANT_API_KEY` in `my_secrets.py`
+
+2. **Connection Failed**
+   - Verify Qdrant instance is running
+   - Check network connectivity
+   - Validate API key permissions
 
 ## Security
 
