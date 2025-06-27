@@ -24,6 +24,8 @@ from openai import OpenAI
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 import email.utils
+import pkg_resources
+import requests as py_requests
 
 # Import Secrets
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../secrets')))
@@ -131,6 +133,10 @@ def check_config(tool):
                 service.spreadsheets().get(spreadsheetId=my_secrets.SPREADSHEET_ID).execute()
                 return True
             return False
+        elif tool == "requests":
+            # Check requests library security
+            is_secure, version = check_requests_security()
+            return is_secure
         else:
             print(f"Unknown tool: {tool}")
             return False
@@ -141,6 +147,39 @@ def check_config(tool):
 # ============================================================================
 # UTILITY FUNCTIONS
 # ============================================================================
+
+def check_requirements_freshness():
+    """Check if requirements.txt packages are up to date with PyPI."""
+    outdated = []
+    try:
+        with open('requirements.txt') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                if '==' in line:
+                    pkg, ver = line.split('==')
+                else:
+                    continue
+                try:
+                    # Get installed version
+                    installed_ver = pkg_resources.get_distribution(pkg).version
+                except Exception:
+                    installed_ver = None
+                try:
+                    # Get latest version from PyPI
+                    resp = py_requests.get(f'https://pypi.org/pypi/{pkg}/json', timeout=3)
+                    if resp.status_code == 200:
+                        latest_ver = resp.json()['info']['version']
+                    else:
+                        latest_ver = None
+                except Exception:
+                    latest_ver = None
+                if installed_ver and latest_ver and installed_ver != latest_ver:
+                    outdated.append((pkg, installed_ver, latest_ver))
+    except Exception as e:
+        print(f"Error checking requirements freshness: {e}")
+    return outdated
 
 def process_datetime(datetime_str, output_format="timestamp"):
     """Unified datetime processing function with multiple output formats."""
@@ -1214,101 +1253,151 @@ def clear_data(tool):
 
 def streamlit_interface():
     """Streamlit interface for the Event Agent."""
-    st.title("Event Agent Dashboard")
+    st.set_page_config(
+        page_title="Event Agent Dashboard",
+        page_icon="🤖",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
     
-    # 1. Database Configuration Section
-    st.header("🗄️ Database Configuration")
-    
-    # Create columns for status and actions
-    db_status_col, db_action_col = st.columns(2)
-    
-    with db_status_col:
+    # Sidebar for status checks
+    with st.sidebar:
+        st.title("🔧 System Status")
+        st.markdown("---")
+        
+        # Requirements freshness check
+        st.subheader("📦 Dependencies")
+        outdated = check_requirements_freshness()
+        if outdated:
+            st.warning("**Outdated packages:**")
+            for pkg, installed, latest in outdated:
+                st.caption(f"• {pkg}: {installed} → {latest}")
+        else:
+            st.success("✅ All packages up to date")
+        
+        st.markdown("---")
+        
+        # Tool status (merged Database and Service)
+        st.subheader("🔧 Tool Status")
+        
         # DynamoDB Status
         dynamo_status = check_config("dynamo")
-        st.metric("DynamoDB Tables", "✅ Ready" if dynamo_status else "❌ Missing")
+        if dynamo_status:
+            st.success("✅ DynamoDB")
+        else:
+            st.error("❌ DynamoDB")
         
         # AWS Status
         aws_status = check_config("aws")
-        st.metric("AWS Access", "✅ Connected" if aws_status else "❌ Disconnected")
+        if aws_status:
+            st.success("✅ AWS")
+        else:
+            st.error("❌ AWS")
         
         # Qdrant Status
         qdrant_status = check_config("qdrant")
         if qdrant_status:
-            st.metric("Qdrant Status", "✅ Connected")
+            st.success("✅ Qdrant")
         else:
-            st.metric("Qdrant Status", "❌ Disconnected")
+            st.error("❌ Qdrant")
+        
+        # Gmail Status
+        gmail_status = check_config("gmail")
+        if gmail_status:
+            st.success("✅ Gmail")
+        else:
+            st.error("❌ Gmail")
+        
+        # Google Sheets Status
+        sheets_status = check_config("google_sheets")
+        if sheets_status:
+            st.success("✅ Sheets")
+        else:
+            st.error("❌ Sheets")
     
-    with db_action_col:
-        # Setup DynamoDB if needed
+    # Main content area
+    st.title("🤖 Event Agent Dashboard")
+    st.markdown("---")
+    
+    # Database Management Section
+    st.header("🗄️ Database Management")
+    
+    # Create columns for database actions
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
         if not dynamo_status:
-            st.warning("DynamoDB events table is not set up.")
-            if st.button("Setup DynamoDB Tables", use_container_width=True):
+            st.warning("DynamoDB tables not set up")
+            if st.button("🔧 Setup DynamoDB", use_container_width=True):
                 with st.spinner("Setting up DynamoDB tables..."):
                     run_setup_script()
                     st.rerun()
-        
-        # Clear DynamoDB Data
-        if st.button("🗑️ Clear DynamoDB Data", use_container_width=True):
-            with st.spinner("Clearing DynamoDB data..."):
-                success, _, events_cleared = clear_data("dynamo")
-                if success:
-                    st.success(f"DynamoDB cleared successfully! Removed {events_cleared} events.")
-                    st.rerun()
-                else:
-                    st.error("Failed to clear DynamoDB data. Check the terminal logs for details.")
-        
-        # Clear Qdrant Cluster
-        if st.button("🗑️ Clear Qdrant Cluster", use_container_width=True):
-            with st.spinner("Clearing Qdrant cluster..."):
-                if not qdrant_status:
-                    st.warning("Qdrant is not configured.")
-                else:
+        else:
+            if st.button("🗑️ Clear DynamoDB", use_container_width=True):
+                with st.spinner("Clearing DynamoDB data..."):
+                    success, _, events_cleared = clear_data("dynamo")
+                    if success:
+                        st.success(f"Cleared {events_cleared} events")
+                        st.rerun()
+                    else:
+                        st.error("Failed to clear DynamoDB")
+    
+    with col2:
+        if not qdrant_status:
+            st.warning("Qdrant not configured")
+        else:
+            if st.button("🗑️ Clear Qdrant", use_container_width=True):
+                with st.spinner("Clearing Qdrant cluster..."):
                     success, collections_cleared, points_cleared = clear_data("qdrant")
                     if success:
-                        st.success(f"Qdrant cluster cleared successfully! Cleared {collections_cleared} collections with {points_cleared} total points.")
+                        st.success(f"Cleared {collections_cleared} collections")
+                        st.rerun()
                     else:
-                        st.error("Failed to clear Qdrant cluster. Check the terminal logs for details.")
+                        st.error("Failed to clear Qdrant")
     
-    # 2. Gmail Configuration Section
-    st.header("📧 Gmail Configuration")
+    with col3:
+        if st.button("📤 Export to Sheets", use_container_width=True):
+            with st.spinner("Exporting to Google Sheets..."):
+                if export_to_google_sheets():
+                    st.success("Exported successfully!")
+                else:
+                    st.error("Export failed")
     
-    # Create columns for status and actions
-    gmail_status_col, gmail_action_col = st.columns(2)
+    st.markdown("---")
     
-    with gmail_status_col:
-        # Gmail Status
-        gmail_status = check_config("gmail")
-        st.metric("Gmail Access", "✅ Connected" if gmail_status else "❌ Disconnected")
-        
-        # If Gmail is disconnected, show setup button
+    # Email Processing Section
+    st.header("📧 Email Processing")
+    
+    # Create columns for email actions
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
         if not gmail_status:
-            if st.button("🔄 Run Setup", use_container_width=True):
+            st.warning("Gmail not connected")
+            if st.button("🔄 Setup Gmail", use_container_width=True):
                 with st.spinner("Running setup..."):
                     run_setup_script()
                     st.rerun()
+        else:
+            if st.button("📥 Fetch New Emails", use_container_width=True):
+                with st.spinner("Fetching new emails..."):
+                    email_data, processed_count = process_emails(action="fetch_new")
+                    if email_data:
+                        st.success(f"Fetched {processed_count} emails")
+                        st.rerun()
+                    else:
+                        st.info("No new emails found")
     
-    with gmail_action_col:
-        # Check for New Emails
-        if st.button("📥 Check for New Emails", use_container_width=True):
-            with st.spinner("Fetching new emails from Gmail..."):
-                email_data, processed_count = process_emails(action="fetch_new")
-                if email_data:
-                    print(f"Successfully fetched {processed_count} emails from Gmail and stored in Qdrant.")
-                    st.success(f"Successfully fetched {processed_count} emails from Gmail and stored in Qdrant.")
-                else:
-                    print("No new emails found in inbox.")
-                    st.info("No new emails found in inbox.")
-        
-        # Process Emails
+    with col2:
         if st.button("⚙️ Process Emails", use_container_width=True):
-            with st.spinner("Processing emails to extract events..."):
-                # Then process emails
+            with st.spinner("Processing emails..."):
                 process_emails()
-                st.success("Email processing completed!")
-        
-        # Enrich Events with URL Data
-        if st.button("🔗 Enrich Events with URL Data", use_container_width=True):
-            with st.spinner("Enriching events with data from URLs..."):
+                st.success("Processing completed!")
+                st.rerun()
+    
+    with col3:
+        if st.button("🔗 Enrich Events", use_container_width=True):
+            with st.spinner("Enriching events..."):
                 # Read events from DynamoDB and enrich them with missing data from URLs
                 try:
                     print("Reading events from DynamoDB for enrichment...")
@@ -1319,7 +1408,7 @@ def streamlit_interface():
                     
                     if not items:
                         print("No events found in DynamoDB to enrich")
-                        st.info("No events found in DynamoDB to enrich")
+                        st.info("No events found to enrich")
                     else:
                         print(f"Found {len(items)} events in DynamoDB")
                         
@@ -1416,69 +1505,74 @@ def streamlit_interface():
                         
                 except Exception as e:
                     print(f"Error enriching DynamoDB events: {e}")
-                    st.error(f"Error enriching DynamoDB events: {e}")
+                    st.error(f"Error enriching events: {e}")
                 
-                st.success("Event enrichment completed!")
+                st.success("Enrichment completed!")
+                st.rerun()
     
-    # 3. Data Access Section
-    st.header("📊 Data Access")
-    st.markdown("### 📋 Google Sheet")
+    st.markdown("---")
+    
+    # Quick Links
+    st.header("🔗 Quick Links")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("📋 Open Google Sheet", use_container_width=True):
+            st.markdown(f'<a href="https://docs.google.com/spreadsheets/d/{my_secrets.SPREADSHEET_ID}" target="_blank">Click here to open Google Sheet</a>', unsafe_allow_html=True)
+            st.success("Opening Google Sheet in new tab...")
+    
+    with col2:
+        if st.button("🔄 Refresh Page", use_container_width=True):
+            st.rerun()
+    
+    st.markdown("---")
 
-    # Export to Google Sheets
-    if st.button("📤 Export to Google Sheets", use_container_width=True):
-        with st.spinner("Exporting events to Google Sheets..."):
-            if export_to_google_sheets():
-                st.success("Events exported to Google Sheets successfully!")
+    # Data Display Section
+    st.header("📊 Data View")
+    
+    # Tabs for different data views
+    tab1, tab2 = st.tabs(["📧 Emails", "🎯 Events"])
+    
+    with tab1:
+        st.subheader("Email Data")
+        try:
+            emails = get_all_emails_from_qdrant()
+            
+            # Convert to DataFrame
+            emails_df = pd.DataFrame(emails)
+            if not emails_df.empty:
+                # Convert timestamps to readable dates, handling None values
+                if 'received' in emails_df.columns:
+                    emails_df['received'] = pd.to_datetime(emails_df['received'].fillna(0).astype(int), unit='s')
+                if 'processed' in emails_df.columns:
+                    emails_df['processed'] = pd.to_datetime(emails_df['processed'].fillna(0).astype(int), unit='s')
+                
+                st.dataframe(emails_df, use_container_width=True)
             else:
-                st.error("Failed to export events to Google Sheets. Check logs for details.")
-
-    # Google Sheet Link
-    if st.button("📋 Open Google Sheet", use_container_width=True):
-        st.markdown(f'<a href="https://docs.google.com/spreadsheets/d/' + my_secrets.SPREADSHEET_ID + '" target="_blank">Click here to open Google Sheet</a>', unsafe_allow_html=True)
-        st.success("Opening Google Sheet in new tab...")
+                st.info("No emails found in Qdrant")
+        except Exception as e:
+            st.error(f"Error loading emails: {e}")
     
-    # Data Tables
-    st.markdown("### 🎯 Event Emails")
-    # Get all event emails from Qdrant
-    try:
-        emails = get_all_emails_from_qdrant()
-        
-        # Convert to DataFrame
-        emails_df = pd.DataFrame(emails)
-        if not emails_df.empty:
-            # Convert timestamps to readable dates, handling None values
-            if 'received' in emails_df.columns:
-                emails_df['received'] = pd.to_datetime(emails_df['received'].fillna(0).astype(int), unit='s')
-            if 'processed' in emails_df.columns:
-                emails_df['processed'] = pd.to_datetime(emails_df['processed'].fillna(0).astype(int), unit='s')
-    except Exception as e:
-        st.error(f"Error getting event emails: {e}")
-        emails_df = pd.DataFrame()
-    
-    if not emails_df.empty:
-        st.dataframe(emails_df, use_container_width=True)
-    else:
-        st.info("No event emails found.")
-    
-    st.markdown("### 🎯 Events")
-    events_df = get_events()
-    if not events_df.empty:
-        # Add filters
-        col1, col2 = st.columns(2)
-        with col1:
-            date_filter = st.date_input("Filter by date (optional)", value=None)
-            if date_filter is not None:  # Only filter if a date is selected
-                events_df = events_df[events_df['Date'].dt.date == date_filter]
-        
-        with col2:
-            city_filter = st.text_input("Filter by city (optional)")
-            if city_filter:
-                events_df = events_df[events_df['City'].str.contains(city_filter, case=False, na=False)]
-        
-        # Display filtered events
-        st.dataframe(events_df, use_container_width=True)
-    else:
-        st.info("No events found.")
+    with tab2:
+        st.subheader("Event Data")
+        events_df = get_events()
+        if not events_df.empty:
+            # Add filters
+            col1, col2 = st.columns(2)
+            with col1:
+                date_filter = st.date_input("Filter by date (optional)", value=None)
+                if date_filter is not None:
+                    events_df = events_df[events_df['Date'].dt.date == date_filter]
+            
+            with col2:
+                city_filter = st.text_input("Filter by city (optional)")
+                if city_filter:
+                    events_df = events_df[events_df['City'].str.contains(city_filter, case=False, na=False)]
+            
+            # Display filtered events
+            st.dataframe(events_df, use_container_width=True)
+        else:
+            st.info("No events found in DynamoDB")
 
 # Main function
 if __name__ == "__main__":

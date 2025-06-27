@@ -137,10 +137,10 @@ graph LR
    ```
 
 2. **Using the Interface**
-   - Check system status (Gmail, AWS, DynamoDB, Qdrant)
+   - Check system status in the sidebar (Dependencies, Tools)
    - Setup DynamoDB tables if needed
    - Process new emails
-   - View event emails and extracted events
+   - View event emails and extracted events in tabs
    - Filter and sort events
    - Export events to Google Sheets
 
@@ -198,22 +198,21 @@ graph LR
    - Verify region matches your DynamoDB tables
 
 ### Qdrant Issues
-1. **Collection Not Found**
-   - The application automatically creates the `emails` collection
-   - Check Qdrant connection and credentials
-   - Verify `QDRANT_URL` and `QDRANT_API_KEY` in `my_secrets.py`
+1. **Connection Failed**
+   - Verify QDRANT_URL and QDRANT_API_KEY in `my_secrets.py`
+   - Check if Qdrant server is running
 
-2. **Connection Failed**
-   - Verify Qdrant instance is running
-   - Check network connectivity
-   - Validate API key permissions
+2. **Collection Not Found**
+   - Run `python3 setup.py` to create collections
+   - Check Qdrant server logs for errors
 
-## Security
+## 🔒 Security
 
-- Never commit `my_secrets.py` or `token.json`
+- The app automatically checks for outdated dependencies and displays them in the UI
+- Never commit `my_secrets.py` or `token.json` to version control
 - Use `.gitignore` to exclude sensitive files
 - Rotate AWS and Gmail credentials regularly
-- Keep dependencies updated
+- Keep dependencies updated by running `pip install -r requirements.txt --upgrade`
 
 ## Contributing
 
