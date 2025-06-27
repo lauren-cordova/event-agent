@@ -211,14 +211,6 @@ def process_datetime(datetime_str, output_format="timestamp"):
             return int(time.time())
         return datetime_str
 
-def sanitize_url(url):
-    """Sanitize URL to ensure proper format."""
-    if not url:
-        return ""
-    # Remove any query parameters
-    url = url.split('?')[0]
-    return url
-
 def run_setup_script():
     """Run the setup script."""
     try:
@@ -273,62 +265,23 @@ def create_email_embedding(text):
         print(f"Error creating embedding: {e}")
         return None
 
-def chunk_email_text(text, max_chunk_size=1000):
-    """Split email text into chunks for better vector analysis."""
-    if len(text) <= max_chunk_size:
-        return [text]
-    
-    # Split by sentences first
-    sentences = re.split(r'[.!?]+', text)
-    chunks = []
-    current_chunk = ""
-    
-    for sentence in sentences:
-        sentence = sentence.strip()
-        if not sentence:
-            continue
-            
-        if len(current_chunk) + len(sentence) < max_chunk_size:
-            current_chunk += sentence + ". "
-        else:
-            if current_chunk:
-                chunks.append(current_chunk.strip())
-            current_chunk = sentence + ". "
-    
-    if current_chunk:
-        chunks.append(current_chunk.strip())
-    
-    return chunks
-
-def email_exists_in_qdrant(msg_id):
-    """Check if an email with the given msg_id already exists in Qdrant."""
+def store_email_in_qdrant(email_data):
+    """Store email data in Qdrant with vector embeddings."""
     try:
-        # Ensure collection exists
-        if not ensure_qdrant_collection():
-            print("Failed to ensure Qdrant collection exists")
-            return False
-        
+        # Check if email already exists
         # Search for existing email with this msg_id
         results = qdrant_client.scroll(
             collection_name="emails",
             limit=10
         )
         
+        email_exists = False
         for point in results[0]:
-            if point.payload.get('msg_id') == msg_id and point.payload.get('type') == 'full_email':
-                return True
+            if point.payload.get('msg_id') == email_data['msg_id'] and point.payload.get('type') == 'full_email':
+                email_exists = True
+                break
         
-        return False
-        
-    except Exception as e:
-        print(f"Error checking if email exists in Qdrant: {e}")
-        return False
-
-def store_email_in_qdrant(email_data):
-    """Store email data in Qdrant with vector embeddings."""
-    try:
-        # Check if email already exists
-        if email_exists_in_qdrant(email_data['msg_id']):
+        if email_exists:
             print(f"Email {email_data['msg_id']} already exists in Qdrant, skipping...")
             return True
         
@@ -367,7 +320,32 @@ def store_email_in_qdrant(email_data):
         )
         
         # Also store individual chunks for better analysis
-        chunks = chunk_email_text(email_data['body'])
+        # Split email text into chunks for better vector analysis
+        text = email_data['body']
+        max_chunk_size = 1000
+        if len(text) <= max_chunk_size:
+            chunks = [text]
+        else:
+            # Split by sentences first
+            sentences = re.split(r'[.!?]+', text)
+            chunks = []
+            current_chunk = ""
+            
+            for sentence in sentences:
+                sentence = sentence.strip()
+                if not sentence:
+                    continue
+                    
+                if len(current_chunk) + len(sentence) < max_chunk_size:
+                    current_chunk += sentence + ". "
+                else:
+                    if current_chunk:
+                        chunks.append(current_chunk.strip())
+                    current_chunk = sentence + ". "
+            
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+        
         for i, chunk in enumerate(chunks):
             chunk_embedding = create_email_embedding(chunk)
             if chunk_embedding:
@@ -432,24 +410,6 @@ def get_unprocessed_emails_from_qdrant():
         print(f"Error getting unprocessed emails from Qdrant: {e}")
         return []
 
-def mark_email_as_processed_in_qdrant(point_id):
-    """Mark an email as processed in Qdrant."""
-    try:
-        # Ensure collection exists
-        if not ensure_qdrant_collection():
-            print("Failed to ensure Qdrant collection exists")
-            return False
-        
-        qdrant_client.set_payload(
-            collection_name="emails",
-            payload={'processed': int(time.time())},
-            points=[point_id]
-        )
-        return True
-    except Exception as e:
-        print(f"Error marking email as processed in Qdrant: {e}")
-        return False
-
 def get_all_emails_from_qdrant():
     """Get all emails from Qdrant for display."""
     try:
@@ -490,12 +450,17 @@ def get_all_emails_from_qdrant():
 def extract_events_with_ai(plain_text):
     """Extract events from email text using OpenAI."""
     try:
+        # Debug: Print the text being sent to AI to see if URLs are present
+        print("=== TEXT BEING SENT TO AI ===")
+        print(plain_text[:500] + "..." if len(plain_text) > 500 else plain_text)
+        print("=== END TEXT ===")
+        
         payload = {
             "model": "gpt-4",
             "messages": [
                 {"role": "system", "content": """You are an event extraction assistant. Extract event details from the given text and return them in a JSON array format.
 Each event should be an object with these exact fields:
-{
+{{
     "Event Name": "string",
     "Date": "string",
     "Start Time": "string",
@@ -506,10 +471,13 @@ Each event should be an object with these exact fields:
     "Address": "string",
     "Description": "string",
     "URL": "string"
-}
-Only report clean start and end times including AM/PM but not timezones. Report State as a 2 letter abbreviation. Report date as MM/DD/YYYY of the event itself (not the email date). If year is unknown, assume event is in 2025. The word Location is not a Venue or Address. Return ONLY the JSON array, no other text. If no events are found, return an empty array [].
+}}
 
-IMPORTANT: Look for any mention of events, gatherings, meetings, or activities in the text. Even if the information is incomplete, extract what you can find. If you see a date and time mentioned, it's likely an event. If you see a location mentioned, it's likely a venue. Extract as much information as possible, even if some fields are empty."""},
+IMPORTANT: Each event MUST have a URL field populated. Look for URLs in the text and associate them with the appropriate events. If there are multiple events but only one URL, use that URL for all events. If there are multiple URLs, match them to events based on context or use the first URL for all events. NEVER leave the URL field empty.
+
+Only report clean start and end times in hh:mm AM/PM format (do not include timezone). Report State as a 2 letter abbreviation. Report date as MM/DD/YYYY of the event itself (not the email date). If year is unknown, assume event is in 2025. The word Location is not a Venue or Address. Return ONLY the JSON array, no other text. If no events are found, return an empty array [].
+
+Look for any mention of events, gatherings, meetings, or activities in the text. Even if the information is incomplete, extract what you can find. If you see a date and time mentioned, it's likely an event. If you see a location mentioned, it's likely a venue. Extract as much information as possible, even if some fields are empty."""},
                 {"role": "user", "content": plain_text}
             ],
             "temperature": 0.3,
@@ -536,6 +504,11 @@ IMPORTANT: Look for any mention of events, gatherings, meetings, or activities i
         if not content:
             print("Empty content in OpenAI response")
             return []
+        
+        # Debug: Print the AI response
+        print("=== AI RESPONSE ===")
+        print(content)
+        print("=== END AI RESPONSE ===")
         
         try:
             # First try direct JSON parsing
@@ -619,24 +592,12 @@ def process_event_data(events, sanitize=True):
             "URL": event.get("URL", "")
         }
         
-        if sanitize:
-            # Sanitize event data to remove problematic characters
-            for key, value in processed_event.items():
-                if isinstance(value, str):
-                    processed_event[key] = value.replace('::', '-').replace(':', '-')
-        
         processed_events.append(processed_event)
     return processed_events
 
-def fetch_missing_data(url, missing_fields):
+def fetch_missing_data(url):
     """Fetch missing data from event URL using OpenAI with rate limiting."""
     try:
-        # Sanitize URL first
-        url = sanitize_url(url)
-        if not url:
-            print(f"Invalid URL: {url}")
-            return {}
-            
         # Fetch website content
         response = requests.get(url, timeout=10)
         response.raise_for_status()
@@ -646,11 +607,29 @@ def fetch_missing_data(url, missing_fields):
         website_text = ' '.join([text.strip() for text in soup.stripped_strings])
         
         # Use OpenAI to analyze the website text
-        missing_fields_str = ", ".join(missing_fields)
         payload = {
             "model": "gpt-4",
             "messages": [
-                {"role": "system", "content": f"""You are an event data extraction assistant. Analyze the provided text and extract ONLY the following missing fields: {missing_fields_str}. Only report clean start and end times, not timezones. Report State as a 2 letter abbreviation, and the word Location is not a Venue or Address. Report date as MM/DD/YYYY. Return a JSON object with ONLY these fields. Return ONLY the JSON object, no other text."""},
+                {"role": "system", "content": """You are an event extraction assistant. Extract event details from the given text and return them in a JSON array format.
+Each event should be an object with these exact fields:
+{{
+    "Event Name": "string",
+    "Date": "string",
+    "Start Time": "string",
+    "End Time": "string",
+    "City": "string",
+    "State": "string",
+    "Venue": "string",
+    "Address": "string",
+    "Description": "string",
+    "URL": "string"
+}}
+
+IMPORTANT: Each event MUST have a URL field populated. Look for URLs in the text and associate them with the appropriate events. If there are multiple events but only one URL, use that URL for all events. If there are multiple URLs, match them to events based on context or use the first URL for all events. NEVER leave the URL field empty.
+
+Only report clean start and end times in hh:mm AM/PM format (do not include timezone). Report State as a 2 letter abbreviation. Report date as MM/DD/YYYY of the event itself (not the email date). If year is unknown, assume event is in 2025. The word Location is not a Venue or Address. Return ONLY the JSON array, no other text. If no events are found, return an empty array [].
+
+Look for any mention of events, gatherings, meetings, or activities in the text. Even if the information is incomplete, extract what you can find. If you see a date and time mentioned, it's likely an event. If you see a location mentioned, it's likely a venue. Extract as much information as possible, even if some fields are empty."""},
                 {"role": "user", "content": website_text}
             ],
             "temperature": 0.3
@@ -698,7 +677,7 @@ def fetch_missing_data(url, missing_fields):
         return {}
     except Exception as e:
         print(f"Unexpected error fetching data from URL {url}: {e}")
-        return {} 
+        return {}
 
 # ============================================================================
 # DATA STORAGE FUNCTIONS
@@ -786,158 +765,9 @@ def get_events():
         print(f"Error getting events: {e}")
         return pd.DataFrame()
 
-def get_event_emails():
-    """Get all event emails from Qdrant."""
-    try:
-        emails = get_all_emails_from_qdrant()
-        
-        # Convert to DataFrame
-        df = pd.DataFrame(emails)
-        if not df.empty:
-            # Convert timestamps to readable dates, handling None values
-            if 'received' in df.columns:
-                df['received'] = pd.to_datetime(df['received'].fillna(0).astype(int), unit='s')
-            if 'processed' in df.columns:
-                df['processed'] = pd.to_datetime(df['processed'].fillna(0).astype(int), unit='s')
-        return df
-    except Exception as e:
-        st.error(f"Error getting event emails: {e}")
-        return pd.DataFrame()
-
-def update_existing_event(tool, event_data, existing_data, **kwargs):
-    """Update existing event with missing data in specified tool."""
-    try:
-        if tool == "sheets":
-            service = kwargs.get('service')
-            spreadsheet_id = kwargs.get('spreadsheet_id')
-            existing_row = kwargs.get('existing_row')
-            
-            if not all([service, spreadsheet_id, existing_row]):
-                print("Missing required parameters for sheets update")
-                return
-                
-            # Find the row number of the existing event
-            result = service.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id,
-                range="Events!A:J"
-            ).execute()
-            values = result.get('values', [])
-            
-            # Find the row number by matching the URL
-            row_number = None
-            for idx, row in enumerate(values[1:], start=2):  # Skip header row
-                if len(row) > 9 and row[9] == event_data[9]:  # Compare URLs
-                    row_number = idx
-                    break
-            
-            if row_number is None:
-                print(f"Could not find row number for URL: {event_data[9]}")
-                return
-                
-            updated_values = []
-            for i, (new_val, existing_val) in enumerate(zip(event_data, existing_row)):
-                if not existing_val and new_val:
-                    updated_values.append(new_val)
-                else:
-                    updated_values.append(existing_val)
-            
-            # Update the row with new values using the row number
-            service.spreadsheets().values().update(
-                spreadsheetId=spreadsheet_id,
-                range=f"Events!A{row_number}:J{row_number}",
-                valueInputOption="RAW",
-                body={"values": [updated_values]}
-            ).execute()
-            
-        elif tool == "dynamo":
-            existing_event = kwargs.get('existing_event')
-            
-            if not existing_event:
-                print("Missing existing_event parameter for dynamo update")
-                return
-                
-            update_expressions = []
-            expression_values = {}
-            
-            # Check each field and add to update if missing in existing event
-            fields = {
-                'event_name': 0,
-                'date': 1,
-                'start_time': 2,
-                'end_time': 3,
-                'city': 4,
-                'state': 5,
-                'venue': 6,
-                'address': 7,
-                'description': 8,
-                'url': 9
-            }
-            
-            for field, index in fields.items():
-                if not existing_event.get(field) and event_data[index]:
-                    update_expressions.append(f"{field} = :{field}")
-                    expression_values[f":{field}"] = event_data[index]
-            
-            if update_expressions:
-                events_table.update_item(
-                    Key={'event_id': existing_event['event_id']},
-                    UpdateExpression='SET ' + ', '.join(update_expressions),
-                    ExpressionAttributeValues=expression_values
-                )
-        else:
-            print(f"Unknown tool: {tool}")
-            
-    except Exception as e:
-        print(f"Error updating existing event in {tool}: {e}") 
-
 # ============================================================================
 # GOOGLE SHEETS FUNCTIONS
 # ============================================================================
-
-def write_to_sheet(email_data):
-    """Write email data to Google Sheets."""
-    service = get_service("sheets")
-    if not service:
-        return
-    sheet = service.spreadsheets()
-
-    SPREADSHEET_ID = my_secrets.SPREADSHEET_ID
-    RANGE = 'Emails!A:F'
-    
-    # Get the last row to append after it
-    result = sheet.values().get(
-        spreadsheetId=SPREADSHEET_ID,
-        range=RANGE
-    ).execute()
-    values = result.get('values', [])
-    last_row = len(values) if values else 0
-    
-    # Convert email data to list format and truncate email body text
-    truncated_email_data = []
-    for email in email_data:
-        # Convert to list format: [msg_id, formatted_date, from_email, subject, body]
-        formatted_date = process_datetime(email['received'], "formatted")
-        row = [email['msg_id'], formatted_date, email['from_email'], email['subject'], email['body']]
-        
-        # Truncate body text if needed
-        if len(row) > 4:  # If there's a body text (column E)
-            text = row[4]
-            if text and len(text) > GOOGLE_SHEETS_CHAR_LIMIT:
-                row[4] = text[:GOOGLE_SHEETS_TRUNCATE_LIMIT] + TRUNCATE_SUFFIX
-        truncated_email_data.append(row)
-    
-    # Write new data after the last row
-    if truncated_email_data:
-        # Add empty column F for processed status
-        email_data_with_processed = [row + [""] for row in truncated_email_data]
-        body = {'values': email_data_with_processed}
-        sheet.values().append(
-            spreadsheetId=SPREADSHEET_ID,
-            range=f'Emails!A{last_row + 1}:F',
-            valueInputOption='RAW',
-            insertDataOption='INSERT_ROWS',
-            body=body
-        ).execute()
 
 def export_to_google_sheets():
     """Export events from DynamoDB to Google Sheets."""
@@ -1059,22 +889,63 @@ def process_emails(action="process_existing"):
                     if header['name'] == 'Date':
                         date = header['value']
 
-                # Extract email body
+                # Extract email body - get both plain text and HTML
+                plain_body = None
+                html_body = None
+                
                 if 'parts' in payload:
                     for part in payload['parts']:
                         if part['mimeType'] == 'text/plain':
                             if 'data' in part['body']:
-                                body = base64.urlsafe_b64decode(part['body']['data']).decode()
-                                break
+                                plain_body = base64.urlsafe_b64decode(part['body']['data']).decode()
+                        elif part['mimeType'] == 'text/html':
+                            if 'data' in part['body']:
+                                html_body = base64.urlsafe_b64decode(part['body']['data']).decode()
                         elif part['mimeType'] == 'multipart/alternative':
                             # Handle nested parts
                             for subpart in part['parts']:
-                                if subpart['mimeType'] == 'text/plain':
+                                if subpart['mimeType'] == 'text/plain' and not plain_body:
                                     if 'data' in subpart['body']:
-                                        body = base64.urlsafe_b64decode(subpart['body']['data']).decode()
-                                        break
+                                        plain_body = base64.urlsafe_b64decode(subpart['body']['data']).decode()
+                                elif subpart['mimeType'] == 'text/html' and not html_body:
+                                    if 'data' in subpart['body']:
+                                        html_body = base64.urlsafe_b64decode(subpart['body']['data']).decode()
                 elif 'body' in payload and 'data' in payload['body']:
-                    body = base64.urlsafe_b64decode(payload['body']['data']).decode()
+                    if payload['mimeType'] == 'text/plain':
+                        plain_body = base64.urlsafe_b64decode(payload['body']['data']).decode()
+                    elif payload['mimeType'] == 'text/html':
+                        html_body = base64.urlsafe_b64decode(payload['body']['data']).decode()
+
+                # Combine plain text with URLs from HTML links
+                body = plain_body or ""
+                
+                # Extract URLs from HTML if available and add them to the body text
+                if html_body:
+                    # Use BeautifulSoup to extract URLs from <a href> tags
+                    soup = BeautifulSoup(html_body, 'html.parser')
+                    links = soup.find_all('a', href=True)
+                    
+                    # Extract URLs and add them directly to the body text
+                    for link in links:
+                        url = link['href']
+                        if url.startswith('http'):
+                            # Fix common URL formatting issues
+                            if url.startswith('http-'):
+                                url = url.replace('http-', 'http://', 1)
+                            elif url.startswith('https-'):
+                                url = url.replace('https-', 'https://', 1)
+                            
+                            # Sanitize URL by removing query parameters
+                            if url:
+                                url = url.split('?')[0]  # Remove query parameters
+                            
+                            # Only add if URL is valid after sanitization
+                            if url:
+                                # Add the URL to the body text
+                                if body:
+                                    body += f" {url}"
+                                else:
+                                    body = url
 
                 if from_email and subject and date and body:
                     # Format the date
@@ -1178,7 +1049,7 @@ def process_emails(action="process_existing"):
                                     event.get("Venue", ""),
                                     event.get("Address", ""),
                                     event.get("Description", ""),
-                                    sanitize_url(event.get("URL", ""))
+                                    event.get("URL", "")
                                 ]
                                 
                                 # Write event to DynamoDB
@@ -1190,7 +1061,15 @@ def process_emails(action="process_existing"):
                         
                         # Mark as processed if we successfully extracted and stored events
                         try:
-                            mark_email_as_processed_in_qdrant(email['point_id'])
+                            # Ensure collection exists
+                            if not ensure_qdrant_collection():
+                                print("Failed to ensure Qdrant collection exists")
+                            else:
+                                qdrant_client.set_payload(
+                                    collection_name="emails",
+                                    payload={'processed': int(time.time())},
+                                    points=[email['point_id']]
+                                )
                             print(f"Successfully processed email: {email['subject']}")
                         except Exception as e:
                             print(f"Error marking email as processed: {e}")
@@ -1426,6 +1305,120 @@ def streamlit_interface():
                 # Then process emails
                 process_emails()
                 st.success("Email processing completed!")
+        
+        # Enrich Events with URL Data
+        if st.button("🔗 Enrich Events with URL Data", use_container_width=True):
+            with st.spinner("Enriching events with data from URLs..."):
+                # Read events from DynamoDB and enrich them with missing data from URLs
+                try:
+                    print("Reading events from DynamoDB for enrichment...")
+                    
+                    # Get all events from DynamoDB
+                    response = events_table.scan()
+                    items = response.get('Items', [])
+                    
+                    if not items:
+                        print("No events found in DynamoDB to enrich")
+                        st.info("No events found in DynamoDB to enrich")
+                    else:
+                        print(f"Found {len(items)} events in DynamoDB")
+                        
+                        for item in items:
+                            event_id = item.get('event_id')
+                            url = item.get('url', '')
+                            
+                            if not url:
+                                print(f"Skipping event {event_id} - no URL")
+                                continue
+                            
+                            # Identify missing fields
+                            missing_fields = []
+                            if not item.get('event_name'):
+                                missing_fields.append("Event Name")
+                            if not item.get('date'):
+                                missing_fields.append("Date")
+                            if not item.get('start_time'):
+                                missing_fields.append("Start Time")
+                            if not item.get('end_time'):
+                                missing_fields.append("End Time")
+                            if not item.get('city'):
+                                missing_fields.append("City")
+                            if not item.get('state'):
+                                missing_fields.append("State")
+                            if not item.get('venue'):
+                                missing_fields.append("Venue")
+                            if not item.get('address'):
+                                missing_fields.append("Address")
+                            if not item.get('description'):
+                                missing_fields.append("Description")
+                            
+                            if missing_fields:
+                                print(f"Enriching event {event_id}: {item.get('event_name', 'Unnamed')}")
+                                print(f"Missing fields: {missing_fields}")
+                                print(f"URL: {url}")
+                                
+                                # Fetch missing data from URL
+                                additional_data = fetch_missing_data(url)
+                                
+                                if additional_data:
+                                    # Prepare update expression and values
+                                    update_expressions = []
+                                    expression_values = {}
+                                    expression_names = {}
+                                    
+                                    # Map field names from AI response to DynamoDB field names
+                                    field_mapping = {
+                                        "Event Name": "event_name",
+                                        "Date": "date",
+                                        "Start Time": "start_time", 
+                                        "End Time": "end_time",
+                                        "City": "city",
+                                        "State": "#state",  # Use expression attribute name for reserved keyword
+                                        "Venue": "venue",
+                                        "Address": "address",
+                                        "Description": "description"
+                                    }
+                                    
+                                    for ai_field, value in additional_data.items():
+                                        if value and ai_field in field_mapping:
+                                            db_field = field_mapping[ai_field]
+                                            if not item.get(db_field.replace('#', '')):  # Only update if field is empty
+                                                update_expressions.append(f"{db_field} = :{db_field.replace('#', '')}")
+                                                expression_values[f":{db_field.replace('#', '')}"] = value
+                                                if db_field.startswith('#'):
+                                                    expression_names[db_field] = db_field.replace('#', '')
+                                                print(f"Will update {db_field.replace('#', '')}: {value}")
+                                    
+                                    # Update the event in DynamoDB if we have new data
+                                    if update_expressions:
+                                        try:
+                                            update_params = {
+                                                'Key': {'event_id': event_id},
+                                                'UpdateExpression': 'SET ' + ', '.join(update_expressions),
+                                                'ExpressionAttributeValues': expression_values
+                                            }
+                                            
+                                            # Add ExpressionAttributeNames if we have reserved keywords
+                                            if expression_names:
+                                                update_params['ExpressionAttributeNames'] = expression_names
+                                            
+                                            events_table.update_item(**update_params)
+                                            print(f"Successfully updated event {event_id} in DynamoDB")
+                                        except Exception as e:
+                                            print(f"Error updating event {event_id} in DynamoDB: {e}")
+                                    
+                                    # Add delay between requests to be respectful
+                                    time.sleep(5)
+                                else:
+                                    print(f"Event {event_id} already has complete data")
+                        
+                        print("Event enrichment process completed")
+                        
+                except Exception as e:
+                    print(f"Error enriching DynamoDB events: {e}")
+                    st.error(f"Error enriching DynamoDB events: {e}")
+                
+                st.success("Event enrichment completed!")
     
     # 3. Data Access Section
     st.header("📊 Data Access")
@@ -1445,8 +1438,23 @@ def streamlit_interface():
         st.success("Opening Google Sheet in new tab...")
     
     # Data Tables
-    st.markdown("### 📨 Event Emails")
-    emails_df = get_event_emails()
+    st.markdown("### 🎯 Event Emails")
+    # Get all event emails from Qdrant
+    try:
+        emails = get_all_emails_from_qdrant()
+        
+        # Convert to DataFrame
+        emails_df = pd.DataFrame(emails)
+        if not emails_df.empty:
+            # Convert timestamps to readable dates, handling None values
+            if 'received' in emails_df.columns:
+                emails_df['received'] = pd.to_datetime(emails_df['received'].fillna(0).astype(int), unit='s')
+            if 'processed' in emails_df.columns:
+                emails_df['processed'] = pd.to_datetime(emails_df['processed'].fillna(0).astype(int), unit='s')
+    except Exception as e:
+        st.error(f"Error getting event emails: {e}")
+        emails_df = pd.DataFrame()
+    
     if not emails_df.empty:
         st.dataframe(emails_df, use_container_width=True)
     else:
