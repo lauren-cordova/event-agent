@@ -42,11 +42,6 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# Secrets and Credentials
-my_secrets.py
-token.json
-credentials.json
-
 # AWS
 .aws/
 *.pem
