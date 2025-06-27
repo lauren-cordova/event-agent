@@ -9,4 +9,4 @@ beautifulsoup4==4.13.4
 requests==2.32.4
 python-dateutil==2.9.0.post0
 qdrant-client==1.14.3
-urllib3==1.26.18 
+urllib3==1.26.20 
