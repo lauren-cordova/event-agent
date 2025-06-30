@@ -1,9 +1,17 @@
 # Credentials and secrets
 token.json
+token.pickle
 credentials.json
 secrets/
 my_secrets.py
 .env
+*.pickle
+
+# OAuth and authentication files
+token.pickle
+credentials.json
+client_secret*.json
+client_id*.json
 
 # Python
 __pycache__/

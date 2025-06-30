@@ -1,75 +1,41 @@
-# 🤖 Event Agent
+# 🎫 Event Scraper
 
-An intelligent agent that processes event-related emails, extracts event details, and stores them in a hybrid database architecture. Built with Python, Gmail API, OpenAI, AWS DynamoDB, and Qdrant vector database. The application provides a Streamlit interface for viewing and managing events, with the option to export events to Google Sheets.
+An intelligent event scraping application that processes emails from Gmail, extracts event URLs, and populates event data into Google Sheets. Built with Python, Gmail API, OpenAI, and Google Sheets API. The application provides a beautiful Streamlit interface for managing the entire workflow.
 
 ## Features
 
-- 📧 **Email Processing**: Automatically fetches and processes event-related emails from Gmail
-- 🤖 **AI-Powered Extraction**: Uses OpenAI to intelligently extract event details from email content
-- 🗄️ **Hybrid Storage**: Stores emails in Qdrant (vector database) and events in DynamoDB
-- 🎯 **Event Management**: Tracks and manages events with detailed information
-- 🎨 **Streamlit Interface**: Beautiful web interface for monitoring and managing the system
-- 📊 **Google Sheets Export**: Export events to Google Sheets for additional analysis
-- 🔍 **Vector Search**: Qdrant integration for enhanced email storage and retrieval
+- 📧 **Email Processing**: Automatically fetches and processes emails from Gmail inbox
+- 🔗 **URL Extraction**: Extracts URLs from email content (both HTML links and text)
+- 🧹 **URL Cleaning**: Removes URL parameters to ensure uniqueness
+- 🎯 **Event Data Population**: Uses OpenAI to intelligently extract event information from web pages
+- 📊 **Google Sheets Integration**: Directly populates event data into Google Sheets
+- 🎨 **Beautiful UI**: Modern Streamlit interface with status monitoring
+- 🔄 **Connection Management**: Easy Gmail connection refresh functionality
 
-## Architecture
+## Event Data Fields
 
-```mermaid
-graph LR
-    subgraph Input [📥 Input]
-        G([📥 Gmail Inbox])
-    end
+The application extracts and populates the following event information:
 
-    subgraph Processing [⚙️ Processing]
-        E([Email<br>Parser])
-        X([Event<br>Extractor])
-        W([Web<br>Scraper])
-        D([Data<br>Enricher])
-        DB([🗄️ DynamoDB<br>Events])
-        Q([🔍 Qdrant<br>Emails])
-    end
-
-    subgraph Output [📤 Output]
-        UI([💬 Streamlit UI])
-        GS([Google Sheets])
-    end
-
-    G -->|New Emails| E
-    E -->|Extracted Text| Q
-    Q -->|Stored Email Data| X
-    X -->|Event Data| D
-    X -->|URLs| W
-    W -->|Extra Info| D
-    D -->|Stores Events| DB
-    Q -->|Vector Search| UI
-    DB -->|Structured Data| UI
-    DB -->|Structured Data| GS
-    UI -->|Export Data Command| GS
-
-    style G fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
-    style E fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
-    style X fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
-    style W fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
-    style D fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
-    style UI fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
-    style DB fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
-    style GS fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
-    style Q fill:#5a7de2,stroke:#fff,stroke-width:2px,color:#fff
-
-    linkStyle default stroke-dasharray: 9,5,stroke-dashoffset: 900,animation: dash 25s linear infinite;
-```
+- **Event Name** (Column A): Name or title of the event
+- **Date** (Column B): Event date in mm/dd/yyyy format
+- **Start Time** (Column C): Start time in hh:mm AM/PM format
+- **End Time** (Column D): End time in hh:mm AM/PM format
+- **City** (Column E): City where the event takes place
+- **State** (Column F): 2-letter state abbreviation
+- **Venue** (Column G): Venue name
+- **Address** (Column H): Full address of the event
+- **Description** (Column I): Brief description of the event
+- **URL** (Column J): Source URL from email
 
 ## Prerequisites
 
 - Python 3.8+
-- AWS Account with DynamoDB access
 - Gmail Account
 - OpenAI API Key
 - Google Cloud project with:
   - Gmail API enabled
   - Google Sheets API enabled
   - OAuth 2.0 credentials configured
-- Qdrant instance (required for email storage)
 
 ## Setup
 
@@ -95,39 +61,24 @@ graph LR
      CLIENT_ID = "your_client_id"
      CLIENT_SECRET = "your_client_secret"
      
-     # AWS credentials
-     event_agent_aws_access_key_id = "your_aws_access_key"
-     event_agent_aws_secret_access_key = "your_aws_secret_key"
-     event_agent_aws_region = "your_aws_region"
+     # Google Sheets
+     SPREADSHEET_ID = "your_spreadsheet_id_here"
      
      # OpenAI API key
      openai_by = "your_openai_api_key"
-     
-     # Google Sheets
-     SPREADSHEET_ID = "your_google_sheets_id"
-     
-     # Qdrant Vector Database
-     QDRANT_URL = "your_qdrant_url"
-     QDRANT_API_KEY = "your_qdrant_api_key"
      ```
    - ⚠️ **Important**: Never commit `my_secrets.py` to version control. It's already in `.gitignore`.
 
 4. **Set up Gmail API**
    - Enable Gmail API in Google Cloud Console
-   - Download credentials.json
-   - Run OAuth setup:
-     ```bash
-     python3 setup.py
-     ```
+   - Download credentials.json and place it in the project root
+   - The first time you run the app, it will prompt for OAuth authentication
 
-5. **Set up DynamoDB and Qdrant**
-   - Run the setup script:
-     ```bash
-     python3 setup.py
-     ```
-   - This creates:
-     - DynamoDB `events` table: Stores extracted event information
-     - Qdrant `emails` collection: Stores email data with vector embeddings
+5. **Create Google Sheet**
+   - Create a new Google Sheet
+   - Add a sheet named "Events"
+   - Add headers in row 1: Event Name, Date, Start Time, End Time, City, State, Venue, Address, Description, URL
+   - Copy the spreadsheet ID from the URL and add it to `my_secrets.py`
 
 ## Usage
 
@@ -137,108 +88,64 @@ graph LR
    ```
 
 2. **Using the Interface**
-   - Check system status in the sidebar (Dependencies, Tools)
-   - Setup DynamoDB tables if needed
-   - Process new emails
-   - View event emails and extracted events in tabs
-   - Filter and sort events
-   - Export events to Google Sheets
+   - **Process Emails**: Fetches emails from Gmail and extracts unique URLs to the Google Sheet
+   - **Scrape Event Data**: Goes through URLs in the sheet and populates event information using AI
+   - **Refresh Gmail Connection**: Refreshes OAuth tokens if needed
+   - **Quick Links**: Direct links to Gmail and Google Sheets
+   - **System Status**: Shows configuration status
 
-## Data Storage
+## Workflow
 
-### Qdrant Email Storage
-- **Collection**: `emails`
-- **Vector Size**: 1536 (OpenAI embedding size)
-- **Distance Metric**: Cosine
-- **Data Types**:
-  - `full_email`: Complete email with embedding
-  - `email_chunk`: Email body chunks for better analysis
-- **Fields**:
-  - `msg_id`: Unique message ID
-  - `received`: Timestamp when email was received
-  - `from_email`: Email sender
-  - `subject`: Email subject
-  - `body`: Email body content
-  - `processed`: Timestamp when email was processed
-  - `type`: Data type (full_email or email_chunk)
+1. **Email Processing**: 
+   - Connects to Gmail API
+   - Fetches recent emails from inbox
+   - Extracts URLs from HTML and text content
+   - Removes URL parameters for uniqueness
+   - Adds new unique URLs to Google Sheet
 
-### DynamoDB Events Table
-- `event_id`: Unique event ID (Primary Key)
-- `event_name`: Name of the event
-- `date`: Event date (timestamp)
-- `start_time`: Event start time
-- `end_time`: Event end time
-- `city`: Event city
-- `state`: Event state
-- `venue`: Event venue
-- `address`: Event address
-- `description`: Event description
-- `url`: Event URL
+2. **Event Data Population**:
+   - Reads URLs from Google Sheet
+   - Scrapes each webpage
+   - Uses OpenAI to extract structured event data
+   - Populates all event fields in the sheet
 
 ## Troubleshooting
 
 ### Gmail API Issues
-1. **Token Expired/Revoked**
-   - Delete `token.json`
-   - Run `python3 setup.py`
-   - Re-authenticate with Gmail
+- **Token Expired**: Use the "Refresh Gmail Connection" button
+- **Credentials Missing**: Ensure `credentials.json` is in the project root
+- **API Not Enabled**: Enable Gmail API in Google Cloud Console
 
-2. **Insufficient Permissions**
-   - Ensure you have granted all required scopes:
-     - `https://www.googleapis.com/auth/gmail.readonly`
-     - `https://www.googleapis.com/auth/gmail.modify`
+### Google Sheets Issues
+- **Permission Denied**: Ensure the service account has edit access to the sheet
+- **Sheet Not Found**: Verify the spreadsheet ID in `my_secrets.py`
+- **Wrong Sheet Name**: Ensure the sheet is named "Events"
 
-### DynamoDB Issues
-1. **Tables Not Found**
-   - Run `python3 setup.py`
-   - Verify AWS credentials in `my_secrets.py`
+### OpenAI Issues
+- **API Key Invalid**: Check your OpenAI API key in `my_secrets.py`
+- **Rate Limits**: The app processes URLs sequentially to avoid rate limits
 
-2. **Access Denied**
-   - Check AWS IAM permissions
-   - Verify region matches your DynamoDB tables
+## File Structure
 
-### Qdrant Issues
-1. **Connection Failed**
-   - Verify QDRANT_URL and QDRANT_API_KEY in `my_secrets.py`
-   - Check if Qdrant server is running
-
-2. **Collection Not Found**
-   - Run `python3 setup.py` to create collections
-   - Check Qdrant server logs for errors
-
-## 🔒 Security
-
-- The app automatically checks for outdated dependencies and displays them in the UI
-- Never commit `my_secrets.py` or `token.json` to version control
-- Use `.gitignore` to exclude sensitive files
-- Rotate AWS and Gmail credentials regularly
-- Keep dependencies updated by running `pip install -r requirements.txt --upgrade`
+```
+event-agent/
+├── main.py                 # Main Streamlit application
+├── my_secrets_template.py  # Template for secrets configuration
+├── my_secrets.py          # Your actual secrets (not in git)
+├── credentials.json       # Gmail API credentials (not in git)
+├── token.pickle          # OAuth tokens (not in git)
+├── requirements.txt      # Python dependencies
+└── README.md            # This file
+```
 
 ## Contributing
 
 1. Fork the repository
 2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
+3. Make your changes
+4. Test thoroughly
+5. Submit a pull request
 
-## Google Sheets Integration
+## License
 
-The application can export events to Google Sheets for additional analysis. To use this feature:
-
-1. Ensure you have a Google Cloud project with the Sheets API enabled
-2. Configure the `SPREADSHEET_ID` in `my_secrets.py`
-3. The first time you use the export feature, you'll need to authorize the application
-4. Click the "Export to Google Sheets" button to export current events
-
-The exported data will include all event fields:
-- Event Name
-- Date
-- Start Time
-- End Time
-- City
-- State
-- Venue
-- Address
-- Description
-- URL
+This project is licensed under the MIT License - see the LICENSE file for details.
