@@ -1,6 +1,6 @@
-# 🎫 Event Scraper
+# 🎫 Event Agent
 
-An intelligent event scraping application that processes emails from Gmail, extracts event URLs, and populates event data into Google Sheets. Built with Python, Gmail API, OpenAI, and Google Sheets API. The application provides a beautiful Streamlit interface for managing the entire workflow.
+An intelligent event agent that processes emails from Gmail, extracts event URLs, and populates event data into Google Sheets. Built with Python, Gmail API, OpenAI, and Google Sheets API. The application provides a beautiful Streamlit interface for managing the entire workflow.
 
 ## Features
 

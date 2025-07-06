@@ -28,6 +28,40 @@ import my_secrets
 
 ### FUNCTIONS ###
 
+# Check if all required packages are installed and up to date
+def check_requirements():
+    import subprocess
+    import pkg_resources
+    
+    # Required packages from requirements.txt
+    required_packages = {
+        'streamlit': '1.46.1',
+        'google-api-python-client': '2.174.0',
+        'google-auth-httplib2': '0.2.0',
+        'google-auth-oauthlib': '1.2.2',
+        'openai': '1.92.2',
+        'beautifulsoup4': '4.13.4',
+        'requests': '2.32.4',
+        'lxml': '4.9.3'
+    }
+    
+    outdated_packages = []
+    missing_packages = []
+    
+    for package, required_version in required_packages.items():
+        try:
+            # Get installed version
+            installed_version = pkg_resources.get_distribution(package).version
+            installed = pkg_resources.parse_version(installed_version)
+            required = pkg_resources.parse_version(required_version)
+            
+            if installed < required:
+                outdated_packages.append(f"{package} (installed: {installed_version}, required: {required_version})")
+        except pkg_resources.DistributionNotFound:
+            missing_packages.append(package)
+    
+    return missing_packages, outdated_packages
+
 # Connect to Gmail and get emails
 def process_emails():
     try:
@@ -72,15 +106,17 @@ def process_emails():
         try:
             result = sheets_service.spreadsheets().values().get(
                 spreadsheetId=spreadsheet_id,
-                range='Events!J:J'
+                range='Events!K:K'
             ).execute()
             existing_urls = [row[0] for row in result.get('values', [])[1:] if row]  # Skip header
+            next_row = len(existing_urls) + 2  # +2 because sheet is 1-indexed and we skip header
         except:
             existing_urls = []
+            next_row = 2  # Start at row 2 (after header)
         
         new_urls_count = 0
         
-        for message in messages[:10]:  # Process last 10 emails
+        for message in messages:  # Process all emails
             msg = service.users().messages().get(userId='me', id=message['id']).execute()
             
             # Extract email content
@@ -114,22 +150,15 @@ def process_emails():
                         # Add new URLs to sheet
                         for url in urls:
                             try:
-                                # Find the next empty row in column J
-                                result = sheets_service.spreadsheets().values().get(
-                                    spreadsheetId=spreadsheet_id,
-                                    range='Events!J:J'
-                                ).execute()
-                                values = result.get('values', [])
-                                next_row = len(values) + 1  # +1 because sheets are 1-indexed
-                                
-                                # Update the specific cell in column J
+                                # Update the specific cell in column K using the calculated next_row
                                 sheets_service.spreadsheets().values().update(
                                     spreadsheetId=spreadsheet_id,
-                                    range=f'Events!J{next_row}',
+                                    range=f'Events!K{next_row}',
                                     valueInputOption='RAW',
                                     body={'values': [[url]]}
                                 ).execute()
                                 existing_urls.append(url)
+                                next_row += 1  # Increment for next URL
                                 new_urls_count += 1
                             except Exception as e:
                                 st.error(f"Error adding URL to sheet: {e}")
@@ -184,7 +213,7 @@ def populate_events():
         # Get URLs from sheet
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=spreadsheet_id,
-            range='Events!J:J'
+            range='Events!K:K'
         ).execute()
         
         urls = [row[0] for row in result.get('values', [])[1:] if row]  # Skip header
@@ -195,8 +224,13 @@ def populate_events():
         
         processed_count = 0
         
+        # Process URLs with a small delay to avoid rate limits
         for i, url in enumerate(urls):
             try:
+                # Add a small delay between processing to avoid rate limits
+                if i > 0:
+                    time.sleep(2)  # 2 second delay between URLs
+                
                 # Scrape webpage
                 headers = {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -212,25 +246,35 @@ def populate_events():
                 
                 # Get text content
                 text_content = soup.get_text()
-                text_content = ' '.join(text_content.split())[:3000]  # Limit to 3000 chars
+                text_content = ' '.join(text_content.split())[:9999]  # Limit to 9999 chars
                 
                 # Use ChatGPT to extract event data
                 prompt = f"""
-                Extract event information from this webpage content. Return ONLY a JSON object with these exact fields:
+                Analyze this webpage content and extract event information. You must respond with ONLY a valid JSON object, no other text.
+
+                Return this exact JSON structure:
                 {{
+                    "event": true/false,
                     "event_name": "Event name or title",
-                    "date": "Date that the event takes place, assume year is 2025 if not specified, report results in mm/dd/yyyy format",
-                    "start_time": "Start time of the event, report results in hh:mm AM/PM format", 
-                    "end_time": "End time of the event, report results in hh:mm AM/PM format",
+                    "date": "Event date, report results in mm/dd/yyyy format",
+                    "start_time": "Event start time, report results in hh:mm AM/PM format", 
+                    "end_time": "Event end time, report results in hh:mm AM/PM format",
                     "city": "City name",
                     "state": "2 letter state abbreviation",
                     "venue": "Venue name",
                     "address": "Full address",
                     "description": "Brief description of the event"
                 }}
-                
-                If any field cannot be found, leave it blank.
-                
+
+                Rules:
+                - Set "event" to true only if this is clearly an event page
+                - For date extraction: Look for actual event dates mentioned in the content (like "July 9") and assume year is 2025 if not specified
+                - Prioritize event date and start/end times from the top of the page and not in the event description section which may reference other things
+                - Do NOT guess or assume dates, or default to July 9, only use dates explicitly mentioned in the content
+                - If any field cannot be found, use empty string ""
+                - Return ONLY the JSON object, no explanations or extra text
+                - Ensure the JSON is properly formatted and date is in mm/dd/yyyy format
+
                 Webpage content: {text_content}
                 """
                 
@@ -243,13 +287,43 @@ def populate_events():
                 
                 # Parse JSON response
                 try:
-                    event_data = json.loads(response.choices[0].message.content.strip())
+                    # Clean the response to extract just the JSON
+                    response_text = response.choices[0].message.content.strip()
+                    
+                    # Debug: Show what we received
+                    st.info(f"Raw response for {url}: {response_text[:200]}...")
+                    
+                    # Try to find JSON object in the response
+                    json_start = response_text.find('{')
+                    json_end = response_text.rfind('}') + 1
+                    
+                    if json_start != -1 and json_end > json_start:
+                        json_text = response_text[json_start:json_end]
+                        event_data = json.loads(json_text)
+                        st.success(f"Successfully parsed JSON for {url}")
+                    else:
+                        # If no JSON found, create default structure
+                        st.warning(f"Could not find JSON in response for URL: {url}")
+                        st.warning(f"Full response: {response_text}")
+                        event_data = {
+                            'event': False,
+                            'event_name': '',
+                            'date': '',
+                            'start_time': '',
+                            'end_time': '',
+                            'city': '',
+                            'state': '',
+                            'venue': '',
+                            'address': '',
+                            'description': ''
+                        }
                     
                     # Update the corresponding row in the sheet
                     row_number = i + 2  # +2 because sheet is 1-indexed and we skip header
                     
                     # Create a single row with all event data
                     event_row = [
+                        event_data.get('event', ''),
                         event_data.get('event_name', ''),
                         event_data.get('date', ''),
                         event_data.get('start_time', ''),
@@ -264,15 +338,16 @@ def populate_events():
                     # Update all columns in a single API call
                     sheets_service.spreadsheets().values().update(
                         spreadsheetId=spreadsheet_id,
-                        range=f'Events!A{row_number}:I{row_number}',
+                        range=f'Events!A{row_number}:J{row_number}',
                         valueInputOption='RAW',
                         body={'values': [event_row]}
                     ).execute()
                     
                     processed_count += 1
                     
-                except json.JSONDecodeError:
-                    st.error(f"Failed to parse JSON response for URL: {url}")
+                except json.JSONDecodeError as e:
+                    st.error(f"Failed to parse JSON response for URL: {url}. Error: {e}")
+                    st.error(f"Response was: {response.choices[0].message.content.strip()}")
                     continue
                     
             except Exception as e:
@@ -284,12 +359,187 @@ def populate_events():
     except Exception as e:
         st.error(f"Error populating events: {e}")
 
+# Check and validate event data accuracy
+def check_output():
+    try:
+        # Setup OpenAI
+        openai.api_key = my_secrets.openai_by
+        
+        # Google Sheets setup
+        SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 'https://www.googleapis.com/auth/gmail.modify', 'https://www.googleapis.com/auth/spreadsheets']
+        creds = None
+        
+        if os.path.exists('token.pickle'):
+            with open('token.pickle', 'rb') as token:
+                creds = pickle.load(token)
+        
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    'credentials.json', SCOPES)
+                creds = flow.run_local_server(port=0)
+            
+            with open('token.pickle', 'wb') as token:
+                pickle.dump(creds, token)
+        
+        sheets_service = build('sheets', 'v4', credentials=creds)
+        spreadsheet_id = my_secrets.SPREADSHEET_ID
+        
+        # Get all data from sheet
+        result = sheets_service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range='Events!A:K'
+        ).execute()
+        
+        rows = result.get('values', [])
+        if len(rows) < 2:  # Need at least header + 1 data row
+            st.warning("No data found in sheet to validate.")
+            return
+        
+        # Skip header row
+        data_rows = rows[1:]
+        corrected_count = 0
+        checked_count = 0
+        
+        for i, row in enumerate(data_rows):
+            # Ensure row has enough columns
+            while len(row) < 11:
+                row.append('')
+            
+            event_bool = row[0] if len(row) > 0 else ''
+            url = row[10] if len(row) > 10 else ''  # Column K
+            
+            # Only check rows where event=true and URL exists
+            if event_bool == 'TRUE' and url and url.startswith('http'):
+                checked_count += 1
+                try:
+                    # Scrape webpage
+                    headers = {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                    }
+                    response = requests.get(url, headers=headers, timeout=10)
+                    response.raise_for_status()
+                    
+                    soup = BeautifulSoup(response.content, 'html.parser')
+                    
+                    # Remove script and style elements
+                    for script in soup(["script", "style"]):
+                        script.decompose()
+                    
+                    # Get text content
+                    text_content = soup.get_text()
+                    text_content = ' '.join(text_content.split())[:9999]  # Limit to 9999 chars
+                    
+                    # Use ChatGPT to extract date and time specifically
+                    prompt = f"""
+                    Analyze this webpage content and extract ONLY the event date and times. You must respond with ONLY a valid JSON object, no other text.
+
+                    Return this exact JSON structure:
+                    {{
+                        "date": "Event date, report results in mm/dd/yyyy format",
+                        "start_time": "Event start time, report results in hh:mm AM/PM format", 
+                        "end_time": "Event end time, report results in hh:mm AM/PM format"
+                    }}
+
+                    Rules:
+                    - Look for actual event dates mentioned in the content (like "July 9", "7/9", "July 9th", etc.)
+                    - Assume year is 2025 if not specified
+                    - Look for actual event times mentioned in the content
+                    - Prioritize date and time information from the top of the page
+                    - Make sure the date and time reflects when the event is happening, and NOT some other reference that may be described in the content
+                    - If no specific date/time is mentioned, use empty string ""
+                    - Return ONLY the JSON object, no explanations or extra text
+                    - Ensure the JSON is properly formatted and date is in mm/dd/yyyy format
+
+                    Webpage content: {text_content}
+                    """
+                    
+                    response = openai.chat.completions.create(
+                        model="gpt-3.5-turbo",
+                        messages=[{"role": "user", "content": prompt}],
+                        max_tokens=300,
+                        temperature=0.1
+                    )
+                    
+                    # Parse JSON response
+                    try:
+                        response_text = response.choices[0].message.content.strip()
+                        
+                        # Try to find JSON object in the response
+                        json_start = response_text.find('{')
+                        json_end = response_text.rfind('}') + 1
+                        
+                        if json_start != -1 and json_end > json_start:
+                            json_text = response_text[json_start:json_end]
+                            validation_data = json.loads(json_text)
+                            
+                            # Get current values from sheet
+                            current_date = row[2] if len(row) > 2 else ''  # Column C
+                            current_start_time = row[3] if len(row) > 3 else ''  # Column D
+                            current_end_time = row[4] if len(row) > 4 else ''  # Column E
+                            
+                            # Check if validation data is different from current data
+                            new_date = validation_data.get('date', '')
+                            new_start_time = validation_data.get('start_time', '')
+                            new_end_time = validation_data.get('end_time', '')
+                            
+                            if (new_date and new_date != current_date) or \
+                               (new_start_time and new_start_time != current_start_time) or \
+                               (new_end_time and new_end_time != current_end_time):
+                                
+                                # Update the row with corrected data
+                                row_number = i + 2  # +2 because sheet is 1-indexed and we skip header
+                                
+                                # Create updated row data
+                                updated_row = [
+                                    row[0],  # event (keep as is)
+                                    row[1],  # event_name (keep as is)
+                                    new_date if new_date else current_date,  # date
+                                    new_start_time if new_start_time else current_start_time,  # start_time
+                                    new_end_time if new_end_time else current_end_time,  # end_time
+                                    row[5] if len(row) > 5 else '',  # city (keep as is)
+                                    row[6] if len(row) > 6 else '',  # state (keep as is)
+                                    row[7] if len(row) > 7 else '',  # venue (keep as is)
+                                    row[8] if len(row) > 8 else '',  # address (keep as is)
+                                    row[9] if len(row) > 9 else '',  # description (keep as is)
+                                    row[10] if len(row) > 10 else ''  # URL (keep as is)
+                                ]
+                                
+                                # Update the row
+                                sheets_service.spreadsheets().values().update(
+                                    spreadsheetId=spreadsheet_id,
+                                    range=f'Events!A{row_number}:K{row_number}',
+                                    valueInputOption='RAW',
+                                    body={'values': [updated_row]}
+                                ).execute()
+                                
+                                corrected_count += 1
+                                st.success(f"Corrected data for row {row_number}: {url}")
+                                
+                        else:
+                            st.warning(f"Could not parse validation response for URL: {url}")
+                            
+                    except json.JSONDecodeError as e:
+                        st.error(f"Failed to parse validation JSON for URL: {url}. Error: {e}")
+                        continue
+                        
+                except Exception as e:
+                    st.error(f"Error validating URL {url}: {e}")
+                    continue
+        
+        st.success(f"Validation complete. Checked {checked_count} event rows and corrected {corrected_count} rows with updated date/time information.")
+        
+    except Exception as e:
+        st.error(f"Error checking output: {e}")
+
 ### MAIN ###
 
 # Streamlit app
 def main():
     st.set_page_config(
-        page_title="Event Scraper",
+        page_title="Event Agent",
         page_icon="🎫",
         layout="wide"
     )
@@ -330,84 +580,80 @@ def main():
     </style>
     """, unsafe_allow_html=True)
     
-    st.markdown('<h1 class="main-header">🎫 Event Scraper</h1>', unsafe_allow_html=True)
+    st.markdown('<h1 class="main-header">🎫 Event Agent</h1>', unsafe_allow_html=True)
     st.markdown('<p style="text-align: center; font-size: 1.2rem; color: #666;">Automatically extract event URLs from emails and populate event data from web pages</p>', unsafe_allow_html=True)
     
-    # Main buttons
-    col1, col2, col3 = st.columns(3)
+    # Main buttons stacked vertically
+    if st.button("📧 Process Emails", use_container_width=True):
+        with st.spinner("Processing emails..."):
+            process_emails()
     
-    with col1:
-        if st.button("📧 Process Emails", use_container_width=True):
-            with st.spinner("Processing emails..."):
-                process_emails()
+    if st.button("🌐 Scrape Event Data", use_container_width=True):
+        with st.spinner("Scraping event data..."):
+            populate_events()
     
-    with col2:
-        if st.button("🌐 Scrape Event Data", use_container_width=True):
-            with st.spinner("Scraping event data..."):
-                populate_events()
+    if st.button("✅ Validate & Correct Data", use_container_width=True):
+        with st.spinner("Validating and correcting event data..."):
+            check_output()
     
-    with col3:
+    # Left sidebar for Quick Links and System Status
+    with st.sidebar:
+        st.markdown("## 🔗 Quick Links")
+        
+        # Gmail button
+        if st.button("📧 Open Gmail", use_container_width=True):
+            st.markdown(f'<a href="https://mail.google.com" target="_blank">Opening Gmail...</a>', unsafe_allow_html=True)
+        
+        # Google Sheets button
+        if st.button("📊 Open Google Sheet", use_container_width=True):
+            st.markdown(f'<a href="https://docs.google.com/spreadsheets/d/{my_secrets.SPREADSHEET_ID}" target="_blank">Opening Google Sheet...</a>', unsafe_allow_html=True)
+        
+        # Refresh Gmail Connection button
         if st.button("🔄 Refresh Gmail Connection", use_container_width=True):
             if os.path.exists('token.pickle'):
                 os.remove('token.pickle')
                 st.success("Gmail connection refreshed. Please try processing emails again.")
             else:
                 st.info("No existing connection to refresh.")
-    
-    # Links section
-    st.markdown("---")
-    st.markdown('<h3 style="text-align: center;">Quick Links</h3>', unsafe_allow_html=True)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown(f"""
-        <div style="text-align: center;">
-            <a href="https://mail.google.com" target="_blank" style="text-decoration: none;">
-                <button style="background-color: #ea4335; color: white; border: none; padding: 0.5rem 1rem; border-radius: 0.5rem; font-weight: bold; cursor: pointer;">
-                    📧 Open Gmail
-                </button>
-            </a>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown(f"""
-        <div style="text-align: center;">
-            <a href="https://docs.google.com/spreadsheets/d/{my_secrets.SPREADSHEET_ID}" target="_blank" style="text-decoration: none;">
-                <button style="background-color: #0f9d58; color: white; border: none; padding: 0.5rem 1rem; border-radius: 0.5rem; font-weight: bold; cursor: pointer;">
-                    📊 Open Google Sheet
-                </button>
-            </a>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # Status section
-    st.markdown("---")
-    st.markdown('<h3 style="text-align: center;">System Status</h3>', unsafe_allow_html=True)
-    
-    # Check if credentials file exists
-    if os.path.exists('credentials.json'):
-        st.success("✅ Gmail API credentials found")
-    else:
-        st.error("❌ Gmail API credentials not found. Please add credentials.json file.")
-    
-    # Check if secrets are configured
-    try:
-        if hasattr(my_secrets, 'SPREADSHEET_ID') and my_secrets.SPREADSHEET_ID != "your_spreadsheet_id_here":
-            st.success("✅ Google Sheets ID configured")
+        
+        st.markdown("---")
+        st.markdown("## 📊 System Status")
+        
+        # Check requirements
+        missing_packages, outdated_packages = check_requirements()
+        
+        if missing_packages:
+            st.error(f"❌ Missing packages: {', '.join(missing_packages)}")
         else:
-            st.error("❌ Google Sheets ID not configured in my_secrets.py")
-    except:
-        st.error("❌ my_secrets.py not found or not properly configured")
-    
-    try:
-        if hasattr(my_secrets, 'openai_by') and my_secrets.openai_by != "your_openai_api_key":
-            st.success("✅ OpenAI API key configured")
+            st.success("✅ All required packages are installed")
+        
+        if outdated_packages:
+            st.warning(f"⚠️ Outdated packages: {', '.join(outdated_packages)}")
         else:
-            st.error("❌ OpenAI API key not configured in my_secrets.py")
-    except:
-        st.error("❌ OpenAI API key not configured")
+            st.success("✅ All packages are up to date")
+        
+        # Check if credentials file exists
+        if os.path.exists('credentials.json'):
+            st.success("✅ Gmail API credentials found")
+        else:
+            st.error("❌ Gmail API credentials not found. Please add credentials.json file.")
+        
+        # Check if secrets are configured
+        try:
+            if hasattr(my_secrets, 'SPREADSHEET_ID') and my_secrets.SPREADSHEET_ID != "your_spreadsheet_id_here":
+                st.success("✅ Google Sheets ID configured")
+            else:
+                st.error("❌ Google Sheets ID not configured in my_secrets.py")
+        except:
+            st.error("❌ my_secrets.py not found or not properly configured")
+        
+        try:
+            if hasattr(my_secrets, 'openai_by') and my_secrets.openai_by != "your_openai_api_key":
+                st.success("✅ OpenAI API key configured")
+            else:
+                st.error("❌ OpenAI API key not configured in my_secrets.py")
+        except:
+            st.error("❌ OpenAI API key not configured")
 
 if __name__ == "__main__":
     main()
